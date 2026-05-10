@@ -1,0 +1,29 @@
+# Local runtime configuration containing API keys
+js/env.js
+!js/env.js.example
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Secrets and credentials
+*secret*
+*credential*
+credentials*.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# Local/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

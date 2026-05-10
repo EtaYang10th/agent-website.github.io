@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ETA — Edge Thin Agent</title>
+<!-- 第三方库 -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" id="hljs-theme">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-theme-light" disabled>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<!-- 样式 -->
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- TOAST -->
+<div class="toast-container" id="toasts"></div>
+
+<!-- IMAGE VIEWER -->
+<div class="img-viewer" id="imgViewer" style="display:none" onclick="this.style.display='none'">
+  <img id="imgViewerSrc">
+</div>
+
+<!-- SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <h2>✦ ETA</h2>
+    <button class="icon-btn" onclick="newConversation()" title="新对话">＋</button>
+  </div>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">对话列表</div>
+  </div>
+  <div class="conv-list" id="convList"></div>
+  <div class="config-panel" id="configPanel">
+    <div class="config-row">
+        <label>Base URL</label>
+      <input id="cfgBaseUrl" value="" placeholder="https://api.openai.com/v1">
+    </div>
+    <div class="config-row">
+        <label>API Key</label>
+      <input id="cfgApiKey" type="password" value="" placeholder="sk-...">
+    </div>
+    <div class="config-row">
+      <label>System Prompt</label>
+      <textarea id="cfgSystem" rows="3" style="width:100%;background:var(--input-bg);border:1px solid var(--border);
+        border-radius:6px;padding:7px 10px;color:var(--text);font-size:.82rem;outline:none;resize:vertical;
+        font-family:var(--font);min-height:60px;transition:border .2s"
+        placeholder="System Prompt (supports multi-line)">You are a helpful, highly knowledgeable assistant. Think step by step, break down complex problems into smaller parts, reason through each carefully, and show your chain of thought before giving a final answer. Be thorough, precise, and cite sources when possible.</textarea>
+    </div>
+    <div style="display:flex;gap:6px">
+      <div class="config-row" style="flex:1">
+        <label>Temperature</label>
+        <input id="cfgTemp" type="number" value="0.7" min="0" max="2" step="0.1">
+      </div>
+      <div class="config-row" style="flex:1">
+        <label>Max Tokens</label>
+        <input id="cfgMaxTok" type="number" value="200000" min="1" max="200000">
+      </div>
+    </div>
+    <div class="config-row">
+      <label>SerpAPI Key</label>
+      <input id="cfgSerpApiKey" type="password" value="" placeholder="your_serpapi_key">
+    </div>
+    <div class="config-row">
+      <label>Brave Search Key</label>
+      <input id="cfgBraveKey" type="password" value="" placeholder="your_brave_key">
+    </div>
+    <div class="search-toggle" style="margin-bottom:6px">
+      <input type="checkbox" id="cfgSearchEnabled" checked>
+      <label for="cfgSearchEnabled">启用 Agent 联网能力（搜索+抓取网页）</label>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <button class="btn btn-ghost btn-sm" style="flex:1" onclick="showModelListModal()">📋 模型列表</button>
+      <button class="btn btn-ghost btn-sm" style="flex:1" onclick="checkBalance()">💰 余额</button>
+      <button class="btn btn-ghost btn-sm" style="flex:1" onclick="checkSearchKeyUsage()">🔍 搜索用量</button>
+    </div>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<main class="main">
+  <div class="topbar">
+    <button class="topbar-toggle" onclick="toggleSidebar()" title="切换侧边栏">☰</button>
+    <div class="topbar-model">
+      <span style="font-size:.75rem;color:var(--text3)">模型:</span>
+      <select id="modelSelect">
+        <option value="">加载中...</option>
+      </select>
+    </div>
+    <div class="topbar-info" id="topbarInfo"></div>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="ctxToggleBtn" onclick="toggleCtxPanel()" title="缓存区">📚</button>
+      <button class="icon-btn" id="debugToggleBtn" onclick="toggleDebugPanel()" title="调试日志" style="position:relative">🐛<span class="debug-badge" id="debugBadge"></span></button>
+      <button class="icon-btn" onclick="exportConversation()" title="导出对话">📥</button>
+      <button class="icon-btn" onclick="showSettingsModal()" title="设置">⚙</button>
+    </div>
+  </div>
+  <div class="chat-area" id="chatArea">
+    <div class="chat-messages" id="chatMessages">
+      <div class="welcome-screen" id="welcomeScreen">
+        <div class="welcome-logo">✦</div>
+        <div class="welcome-title">ETA</div>
+        <div class="welcome-sub">Edge Thin Agent — 支持连续对话、图片上传、对话分支回退、模型随时切换、🔍 Agent 网页搜索<br>Ctrl+Enter 发送 · 拖拽/粘贴上传文件 · 点击消息可编辑重发</div>
+      </div>
+    </div>
+  </div>
+  <div class="input-area">
+    <div class="input-container">
+      <div class="attachment-preview" id="attachPreview"></div>
+      <div class="input-box" id="inputBox">
+        <textarea id="userInput" rows="1" placeholder="输入消息... (Ctrl+Enter 发送, 可拖拽/粘贴图片)"
+          oninput="autoResize(this)" onkeydown="handleInputKey(event)"></textarea>
+        <div class="input-actions">
+          <input type="file" id="fileInput" multiple accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv,.xml,.html,.css,.java,.c,.cpp,.h,.go,.rs,.rb,.php,.sh,.yaml,.yml,.toml,.sql,.r,.m,.docx,.pptx,.xlsx,.doc,.ppt,.xls,.tex,.log,.ini,.cfg,.conf,.env,.gitignore,.dockerfile" style="display:none" onchange="handleFileSelect(event)">
+          <button class="icon-btn" onclick="document.getElementById('fileInput').click()" title="上传文件">📎</button>
+          <button class="icon-btn" onclick="toggleSearchMode()" id="searchToggle" title="搜索模式: 开" style="color:var(--accent2)">🔍</button>
+          <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="发送">▶</button>
+        </div>
+      </div>
+      <div class="input-hint"><span id="ctxHint"></span>Ctrl+Enter 发送 · 支持拖拽/粘贴图片和文件 · 点击历史消息可编辑重发</div>
+    </div>
+  </div>
+</main>
+
+<!-- DEBUG LOG PANEL -->
+<div class="debug-panel" id="debugPanel">
+  <div class="debug-panel-header">
+    <span>🐛 调试日志</span>
+    <div class="debug-panel-actions">
+      <button onclick="clearDebugLog()">清空</button>
+      <button onclick="copyDebugLog()">复制</button>
+      <button onclick="toggleDebugPanel()">✕</button>
+    </div>
+  </div>
+  <div class="debug-log" id="debugLog"></div>
+</div>
+
+<!-- RIGHT PANEL: Context Buffer -->
+<aside class="ctx-panel" id="ctxPanel">
+  <div class="ctx-panel-header">
+    <span class="ctx-panel-title">📚 对话缓存区</span>
+    <button class="icon-btn" onclick="toggleCtxPanel()" title="关闭缓存区">✕</button>
+  </div>
+  <div class="ctx-url-input">
+    <input id="ctxUrlInput" placeholder="粘贴 URL 抓取..." onkeydown="if(event.key==='Enter')ctxFetchUrl()">
+    <button class="btn btn-primary btn-sm" onclick="ctxFetchUrl()">抓取</button>
+  </div>
+  <div class="ctx-actions">
+    <button class="btn btn-ghost btn-sm" onclick="ctxUploadFile()">📎 上传</button>
+    <button class="btn btn-ghost btn-sm" onclick="ctxClearAll()">🗑 清空</button>
+    <input type="file" id="ctxFileInput" multiple accept=".pdf,.txt,.md,.py,.js,.ts,.json,.csv,.xml,.html,.css,.java,.c,.cpp,.h,.go,.rs,.rb,.php,.sh,.yaml,.yml,.toml,.sql,.r,.m,.docx,.pptx,.xlsx,.tex,.log,.ini,.cfg,.conf,.env" style="display:none" onchange="ctxHandleFileUpload(event)">
+  </div>
+  <div class="ctx-list" id="ctxList"></div>
+  <div class="ctx-stats" id="ctxStats">
+    <span>0 项 · 0 tokens</span>
+    <span>已选: 0 项</span>
+  </div>
+</aside>
+
+<!-- JS 模块（按依赖顺序加载） -->
+<script src="js/env.js" onerror="window.ENV={}"></script>
+<script src="js/debug.js"></script>
+<script src="js/state.js"></script>
+<script src="js/conversation.js"></script>
+<script src="js/render.js"></script>
+<script src="js/file-parser.js"></script>
+<script src="js/search.js"></script>
+<script src="js/context-buffer.js"></script>
+<script src="js/agent.js"></script>
+<script src="js/agent-loop.js"></script>
+<script src="js/agent-commands.js"></script>
+<script src="js/agent-generate.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/init.js"></script>
+<script>
+// 启动自检：确保所有关键模块加载成功
+(function selfCheck() {
+  const missing = [];
+  if (typeof STATE === 'undefined') missing.push('state.js');
+  if (typeof sendMessage === 'undefined') missing.push('agent.js');
+  if (typeof showModelListModal === 'undefined') missing.push('ui.js');
+  if (typeof doWebSearch === 'undefined') missing.push('search.js');
+  if (typeof handleStreamResponseAgent === 'undefined') missing.push('agent-loop.js');
+  if (typeof renderChat === 'undefined') missing.push('render.js');
+  if (missing.length > 0) {
+    document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1a2e;color:#fff;font-family:system-ui;padding:40px;text-align:center"><div>'
+      + '<h1 style="color:#ff6b6b;margin-bottom:16px">⚠️ 加载失败</h1>'
+      + '<p style="font-size:1.1rem;margin-bottom:12px">以下模块未能加载：<br><b>' + missing.join(', ') + '</b></p>'
+      + '<p style="color:#aaa;font-size:.9rem;max-width:500px;margin:0 auto">可能原因：<br>'
+      + '① OneDrive 文件未同步完成（右键文件夹 → 始终保留在此设备上）<br>'
+      + '② 文件夹结构不完整，缺少 js/ 目录<br>'
+      + '③ 浏览器安全策略阻止了 file:// 加载本地脚本</p>'
+      + '<p style="margin-top:20px;color:#aaa;font-size:.85rem">请确保 js/ 文件夹与此 HTML 在同一目录下，且所有文件已完整下载。</p>'
+      + '</div></div>';
+    return;
+  }
+  // 检查是否缺少 API 配置
+  var env = window.ENV || {};
+  var hasEnv = !!(env.BASE_URL && env.API_KEY);
+  var hasLocal = false;
+  try {
+    var raw = localStorage.getItem('ai-chat-cfg');
+    if (raw) { var c = JSON.parse(raw); hasLocal = !!(c.baseUrl && c.apiKey); }
+  } catch(e) {}
+  if (!hasEnv && !hasLocal) {
+    // 显示配置引导浮层
+    var overlay = document.createElement('div');
+    overlay.id = 'setupOverlay';
+    overlay.innerHTML = '<div style="position:fixed;inset:0;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;z-index:99999;font-family:system-ui;padding:20px">'
+      + '<div style="background:#1e1e2e;border-radius:16px;padding:36px 32px;max-width:420px;width:100%;color:#eee;box-shadow:0 8px 32px rgba(0,0,0,.5)">'
+      + '<h2 style="margin:0 0 8px;font-size:1.4rem">👋 首次使用配置</h2>'
+      + '<p style="color:#aaa;font-size:.85rem;margin-bottom:20px">检测到尚未配置 API，请填写以下信息后即可使用。<br>配置会保存在浏览器本地，不会上传。</p>'
+      + '<label style="font-size:.8rem;color:#888">Base URL</label>'
+      + '<input id="_setupBase" style="width:100%;padding:8px 12px;margin:4px 0 12px;border-radius:8px;border:1px solid #444;background:#2a2a3e;color:#fff;font-size:.9rem" placeholder="https://api.openai.com/v1">'
+      + '<label style="font-size:.8rem;color:#888">API Key</label>'
+      + '<input id="_setupKey" type="password" style="width:100%;padding:8px 12px;margin:4px 0 20px;border-radius:8px;border:1px solid #444;background:#2a2a3e;color:#fff;font-size:.9rem" placeholder="sk-...">'
+      + '<button id="_setupBtn" style="width:100%;padding:10px;border:none;border-radius:8px;background:#6c63ff;color:#fff;font-size:1rem;cursor:pointer;font-weight:600">开始使用 ✦</button>'
+      + '<p style="color:#666;font-size:.75rem;margin-top:12px;text-align:center">搜索功能（SerpAPI / Brave）可稍后在左侧面板配置</p>'
+      + '</div></div>';
+    document.body.appendChild(overlay);
+    document.getElementById('_setupBtn').onclick = function() {
+      var base = document.getElementById('_setupBase').value.trim();
+      var key = document.getElementById('_setupKey').value.trim();
+      if (!base || !key) { alert('请填写 Base URL 和 API Key'); return; }
+      document.getElementById('cfgBaseUrl').value = base;
+      document.getElementById('cfgApiKey').value = key;
+      saveConfig();
+      overlay.remove();
+    };
+  }
+})();
+</script>
+
+</body>
+</html>
