@@ -4,7 +4,7 @@ A pure browser-based AI Agent client — no installation, no backend, no Docker,
 
 ## Features
 
-- **Zero Setup** — Pure frontend, runs entirely in the browser. No server, no Docker, no Python, no Node.js. Just open `AI_Chat_Studio.html` in any modern browser.
+- **Zero Setup** — Pure frontend, runs entirely in the browser. No server, no Docker, no Python, no Node.js. Just open `index.html` in any modern browser.
 - **Multi-Model Support** — Switch between models (Claude, GPT, etc.) on the fly. Fetch available models from your API provider or add custom ones.
 - **Agent Web Search** — Built-in agent with internet access: Google (SerpAPI), Brave Search, arXiv, Semantic Scholar, GitHub search, and webpage scraping. Up to 20 rounds of autonomous search per query.
 - **Conversation Tree** — Branch, edit, and rewind conversations. Navigate between branches with ease.
@@ -23,7 +23,7 @@ A pure browser-based AI Agent client — no installation, no backend, no Docker,
 ## Quick Start
 
 1. Clone or download this repository.
-2. Open `Edge_Thin_Agent.html` in your browser.
+2. Open `index.html` in your browser.
 3. First time? A setup dialog will appear — enter your Base URL and API Key.
 4. Start chatting!
 

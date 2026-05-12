@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **零安装** — 纯前端应用，完全在浏览器中运行。不需要服务器、Docker、Python、Node.js。用任意现代浏览器打开 `Edge_Thin_Agent.html` 即可。
+- **零安装** — 纯前端应用，完全在浏览器中运行。不需要服务器、Docker、Python、Node.js。用任意现代浏览器打开 `index.html` 即可。
 - **多模型切换** — 随时切换模型（Claude、GPT 等）。支持从 API 提供商获取可用模型列表，也可手动添加自定义模型。
 - **Agent 联网搜索** — 内置联网 Agent：支持 Google（SerpAPI）、Brave 搜索、arXiv、Semantic Scholar、GitHub 搜索和网页抓取。每次查询最多 20 轮自动搜索。
 - **对话树** — 支持对话分支、编辑重发、回退。可在不同分支间自由切换。
@@ -23,7 +23,7 @@
 ## 快速开始
 
 1. 克隆或下载本仓库。
-2. 用浏览器打开 `Edge_Thin_Agent.html`。
+2. 用浏览器打开 `index.html`。
 3. 首次使用？会弹出配置引导 — 填入 Base URL 和 API Key 即可。
 4. 开始聊天！
 
