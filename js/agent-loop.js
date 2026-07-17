@@ -32,6 +32,8 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
   let inThinkTag = false;
   let rawContentBuf = '';
   const READ_TIMEOUT = 90000;
+  const toolCallsAcc = []; // 按 index 累积的 tool_calls（arguments 为分片拼接的 JSON 字符串）
+  let finishReason = null;
 
   while (true) {
     let done, value;
@@ -62,6 +64,21 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
       const chunk = safeJson(payload);
       if (!chunk?.choices?.[0]) continue;
       const delta = chunk.choices[0].delta;
+      if (chunk.choices[0].finish_reason) finishReason = chunk.choices[0].finish_reason;
+
+      // 累积原生 tool_calls（流式：每片带 index，arguments 为字符串增量）
+      if (Array.isArray(delta?.tool_calls)) {
+        for (const tcDelta of delta.tool_calls) {
+          const i = tcDelta.index ?? 0;
+          if (!toolCallsAcc[i]) toolCallsAcc[i] = { id: '', type: 'function', function: { name: '', arguments: '' } };
+          const slot = toolCallsAcc[i];
+          if (tcDelta.id) slot.id = tcDelta.id;
+          if (tcDelta.type) slot.type = tcDelta.type;
+          if (tcDelta.function?.name) slot.function.name = tcDelta.function.name;
+          if (tcDelta.function?.arguments) slot.function.arguments += tcDelta.function.arguments;
+        }
+        showSearchStatus(aiMsgId, 'search', STATE.lang === 'zh' ? '正在准备工具调用...' : 'Preparing tool calls...');
+      }
 
       let thinkDelta = delta?.thinking || delta?.reasoning_content || delta?.reasoning || '';
       if (!thinkDelta && Array.isArray(delta?.content)) {
@@ -123,23 +140,6 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
           });
         }
 
-        if (searchEnabled) {
-          const hasClosedCmd = /\[\/(SEARCH|SEARCH_ARXIV|SEARCH_SCHOLAR|SEARCH_GITHUB|SEARCH_GOOGLE|FETCH|CTX_READ|CTX_DELETE)\]/i.test(newContent);
-          const openTags = newContent.match(/\[(SEARCH|SEARCH_ARXIV|SEARCH_SCHOLAR|SEARCH_GITHUB|SEARCH_GOOGLE|FETCH|CTX_READ|CTX_DELETE)\]/gi);
-          const hasMultipleOpenCmds = openTags && openTags.length >= 2;
-          const hasSingleCmdWithContent = openTags && openTags.length === 1 &&
-            /\[(SEARCH|SEARCH_ARXIV|SEARCH_SCHOLAR|SEARCH_GITHUB|SEARCH_GOOGLE|FETCH|CTX_READ|CTX_DELETE)\][^\[\]]{3,}\n/i.test(newContent);
-          if (hasClosedCmd || hasMultipleOpenCmds || hasSingleCmdWithContent) {
-            if (contentEl) {
-              let display = conv.tree[aiMsgId].content;
-              display = cleanDisplayCmds(display);
-              contentEl.innerHTML = renderMd(display);
-            }
-            reader.cancel();
-            return newContent;
-          }
-        }
-
         if (!rafPending) {
           rafPending = true;
           requestAnimationFrame(() => {
@@ -148,9 +148,7 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
             if (conv.tree[aiMsgId].thinking) {
               displayHtml += renderThinkingBlock(conv.tree[aiMsgId].thinking, !conv.tree[aiMsgId].content);
             }
-            let display = conv.tree[aiMsgId].content;
-            display = cleanDisplayCmds(display);
-            displayHtml += renderMd(display);
+            displayHtml += renderMd(conv.tree[aiMsgId].content);
             if (contentEl) contentEl.innerHTML = displayHtml;
             $('chatArea').scrollTop = $('chatArea').scrollHeight;
           });
@@ -177,14 +175,17 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
     }
   }
 
-  if (!newContent && !thinkingContent) {
-    console.warn('[Stream] 流结束但 newContent 和 thinkingContent 均为空');
+  const toolCalls = toolCallsAcc.filter(Boolean);
+
+  // 仅在既无正文、又无 thinking、也无工具调用时才视为空响应
+  if (!newContent && !thinkingContent && !toolCalls.length) {
+    console.warn('[Stream] 流结束但 newContent、thinkingContent 和 tool_calls 均为空');
     newContent = '\n\n⚠️ [API 返回了空响应，请重试]';
     conv.tree[aiMsgId].content += newContent;
   } else if (!newContent && thinkingContent) {
     console.warn(`[Stream] 流结束: newContent 为空但有 thinking (${thinkingContent.length} 字符)`);
   }
 
-  console.log(`[Stream] 完成: newContent=${newContent.length}字符, thinking=${thinkingContent.length}字符, inThinkTag=${inThinkTag}`);
-  return newContent;
+  console.log(`[Stream] 完成: newContent=${newContent.length}字符, thinking=${thinkingContent.length}字符, tool_calls=${toolCalls.length}, finish=${finishReason}`);
+  return { content: newContent, toolCalls, finishReason };
 }

@@ -273,16 +273,12 @@ function buildContextBufferPrompt() {
   const buf = getCtxBuffer();
   if (!buf.length) return '';
   const icon = {webpage:'🌐',paper:'📄',file:'📎',search:'🔍',text:'📝'};
-  let prompt = '\n\n[知识库索引] 以下是你的缓存资料列表（仅标题），如需查看完整内容请使用 [CTX_READ] 工具：\n';
+  let prompt = '\n\n[知识库索引] 以下是你的缓存资料列表（仅标题）。如需查看某条的完整内容，请调用 ctx_read 工具并传入对应的 id；不再需要的条目可用 ctx_delete 工具删除：\n';
   for (const item of buf) {
     const ic = icon[item.type] || '📄';
     const tokStr = item.tokens ? ` (~${item.tokens.toLocaleString()} tok)` : '';
     prompt += `  ID=${item.id} ${ic} ${item.name}${tokStr}\n`;
   }
-  prompt += `共 ${buf.length} 条缓存。\n`;
-  prompt += `\n可用工具：
-- [CTX_READ]缓存ID[/CTX_READ] — 读取某条缓存的完整内容
-- [CTX_DELETE]缓存ID[/CTX_DELETE] — 删除不再需要的缓存条目
-[/知识库索引]\n`;
+  prompt += `共 ${buf.length} 条缓存。请先看标题，按需用 ctx_read 读取，不要一次性全部读取。\n[/知识库索引]\n`;
   return prompt;
 }

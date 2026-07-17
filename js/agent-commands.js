@@ -2,12 +2,16 @@
    ETA (Edge Thin Agent) — Agent Command Execution & Search UI Helpers
    ============================================================ */
 
-// ── 执行 Agent 搜索/抓取指令 ──
+// ── 执行 Agent 工具调用（原生 tool_calls）──
+// 关键约束：每个 tool_call 必须返回且仅返回一条 { role:'tool', tool_call_id } 消息，
+// 否则 OpenAI 兼容接口会因 tool_calls 与 tool 消息不匹配而报错。
 async function executeAgentCommands(agentCmds, aiMsgId, conv, searchRound, extraMessages) {
   const roundSignal = STATE.abortCtrl?.signal;
   const PER_CMD_TIMEOUT = 30000;
   const ROUND_TIMEOUT = 60000;
-  console.log(`[Agent 循环] 第 ${searchRound} 轮: 开始执行 ${agentCmds.length} 条搜索/抓取指令`);
+  console.log(`[Agent 循环] 第 ${searchRound} 轮: 开始执行 ${agentCmds.length} 条工具调用`);
+
+  const toolMsg = (cmd, content) => ({ role: 'tool', tool_call_id: cmd.toolCallId, name: cmd.toolName, content });
 
   const cmdPromises = agentCmds.map(async (cmd, idx) => {
     const cmdCtrl = new AbortController();
@@ -17,52 +21,50 @@ async function executeAgentCommands(agentCmds, aiMsgId, conv, searchRound, extra
       else roundSignal.addEventListener('abort', () => cmdCtrl.abort(), { once: true });
     }
     const cmdTimer = setTimeout(() => {
-      console.warn(`[搜索 #${idx}] 单条指令超时 (${PER_CMD_TIMEOUT}ms), 类型=${cmd.type}`);
+      console.warn(`[工具 #${idx}] 单条调用超时 (${PER_CMD_TIMEOUT}ms), 类型=${cmd.type}`);
       cmdCtrl.abort();
     }, PER_CMD_TIMEOUT);
     try {
-      return await executeSingleCommand(cmd, idx, aiMsgId, cmdSignal);
+      const content = await executeSingleCommand(cmd, idx, aiMsgId, cmdSignal);
+      return toolMsg(cmd, content);
     } catch (cmdErr) {
-      const label = cmd.type === 'fetch' ? cmd.url : cmd.query;
-      console.warn(`[搜索 #${idx}] ${cmd.type} 异常: ${cmdErr.message}`);
-      return { role: 'user', content: `[${cmd.type} 超时/失败: ${(label||'').slice(0,60)}]` };
+      const label = cmd.type === 'fetch' ? cmd.url : (cmd.query || cmd.id);
+      console.warn(`[工具 #${idx}] ${cmd.type} 异常: ${cmdErr.message}`);
+      return toolMsg(cmd, `[${cmd.type} 超时/失败: ${(label||'').slice(0,60)}]`);
     } finally {
       clearTimeout(cmdTimer);
     }
   });
 
   let roundTimerId;
-  const roundCtrl = new AbortController();
   const roundTimeout = new Promise(resolve => {
     roundTimerId = setTimeout(() => {
       console.warn(`[Agent 循环] 第 ${searchRound} 轮: 整轮兜底超时 (${ROUND_TIMEOUT}ms)`);
-      roundCtrl.abort();
       resolve('__ROUND_TIMEOUT__');
     }, ROUND_TIMEOUT);
   });
-  console.log(`[Agent 循环] 第 ${searchRound} 轮: 等待 allSettled (${agentCmds.length} 条指令)`);
+  console.log(`[Agent 循环] 第 ${searchRound} 轮: 等待 allSettled (${agentCmds.length} 条工具调用)`);
   const settled = await Promise.race([Promise.allSettled(cmdPromises), roundTimeout]);
   clearTimeout(roundTimerId);
 
+  // 无论成功/失败/超时，都必须为每个 tool_call 产出一条 tool 消息。
+  let settledResults;
   if (settled === '__ROUND_TIMEOUT__') {
     const partial = await Promise.allSettled(cmdPromises);
-    const fulfilled = partial.filter(r => r.status === 'fulfilled').map(r => r.value);
-    const failedCount = partial.filter(r => r.status === 'rejected').length;
-    console.warn(`[Agent 循环] 第 ${searchRound} 轮: 兜底超时后收集到 ${fulfilled.length} 条结果, ${failedCount} 条失败`);
-    extraMessages.push(...fulfilled);
-    if (failedCount > 0) extraMessages.push({ role: 'user', content: `[${failedCount} 条指令超时/失败，已跳过]` });
+    settledResults = partial;
+    console.warn(`[Agent 循环] 第 ${searchRound} 轮: 兜底超时后收集结果`);
   } else {
-    const results = settled.filter(r => r.status === 'fulfilled').map(r => r.value);
-    const failedCount = settled.filter(r => r.status === 'rejected').length;
-    extraMessages.push(...results);
-    if (failedCount > 0) extraMessages.push({ role: 'user', content: `[${failedCount} 条指令执行失败，已跳过]` });
+    settledResults = settled;
     console.log(`[Agent 循环] 第 ${searchRound} 轮: allSettled 完成`);
   }
-
-  // 过滤空值
-  const filtered = extraMessages.filter(Boolean);
-  extraMessages.length = 0;
-  extraMessages.push(...filtered);
+  settledResults.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value) {
+      extraMessages.push(r.value);
+    } else {
+      // Promise 被 reject（一般不会，因为上面已 try/catch）——仍需补一条 tool 消息保证配对
+      extraMessages.push(toolMsg(agentCmds[i], '[工具调用执行失败]'));
+    }
+  });
 
   // 截断过大结果
   const MAX_RESULT_CHARS = 12000;
@@ -76,112 +78,101 @@ async function executeAgentCommands(agentCmds, aiMsgId, conv, searchRound, extra
     }
     totalChars += c.length;
     if (totalChars > MAX_TOTAL_EXTRA_CHARS) {
-      extraMessages.splice(i + 1);
-      extraMessages.push({ role: 'user', content: '[部分搜索结果因总量过大已省略]' });
+      // 不能直接删除后续 tool 消息（会破坏与 tool_call 的配对），只清空其内容
+      for (let j = i + 1; j < extraMessages.length; j++) {
+        extraMessages[j] = { ...extraMessages[j], content: '[结果因总量过大已省略]' };
+      }
       break;
     }
   }
   hideSearchStatus(aiMsgId);
-  console.log(`[Agent 循环] 第 ${searchRound} 轮: 搜索/抓取完成, extraMessages: ${extraMessages.length} 条`);
+  console.log(`[Agent 循环] 第 ${searchRound} 轮: 工具执行完成, tool 消息: ${extraMessages.length} 条`);
 
-  // 检测连续空结果
   const hasUsefulResult = extraMessages.some(m => m.content && m.content.length > 200 && !m.content.startsWith('['));
   if (!hasUsefulResult) {
-    console.warn(`[Agent 循环] 第 ${searchRound} 轮: 无有效搜索结果`);
-  }
-
-  // 根据是否有有效结果，给出不同的提示
-  if (hasUsefulResult) {
-    extraMessages.push({
-      role: 'user',
-      content: 'Above are the tool execution results. Please answer the user\'s question directly based on these results. If the information is insufficient, you may use [SEARCH] or [FETCH] tools again, but do NOT repeat any tool call you have already made.',
-    });
-  } else {
-    extraMessages.push({
-      role: 'user',
-      content: '[系统提示] 本轮工具调用未返回有效结果。请直接基于你已有的知识和之前获取的信息回答用户问题。不要再重复相同的搜索或抓取操作。如果确实需要更多信息，请尝试完全不同的搜索关键词或不同的搜索工具。',
-    });
+    console.warn(`[Agent 循环] 第 ${searchRound} 轮: 无有效工具结果`);
   }
 }
 
-// ── 执行单条指令 ──
+// ── 执行单条工具调用，返回结果文本（字符串）──
 async function executeSingleCommand(cmd, idx, aiMsgId, cmdSignal) {
   if (cmd.type === 'search') {
     showSearchStatus(aiMsgId, 'search', cmd.query);
     console.log(`[搜索 #${idx}] search: "${cmd.query}" 开始`);
     const result = await doGoogleSearch(cmd.query, undefined, cmdSignal);
     console.log(`[搜索 #${idx}] search: "${cmd.query}" 完成`);
-    if (result.error) return { role: 'user', content: `[Search error (${result.engine || '?'}): ${result.error}]` };
+    if (result.error) return `[Search error (${result.engine || '?'}): ${result.error}]`;
     appendSearchResultsCard(aiMsgId, result.results, cmd.query, 'search', result.engine, result.fallback ? result.fallbackReason : null);
     ctxAutoSaveSearch(result.results, cmd.query, 'search');
-    return { role: 'user', content: formatSearchResultsForLLM(result.results, cmd.query) };
+    return formatSearchResultsForLLM(result.results, cmd.query);
   }
   if (cmd.type === 'search_arxiv') {
     showSearchStatus(aiMsgId, 'search', `arXiv: ${cmd.query}`);
     const result = await doArxivSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return { role: 'user', content: `[arXiv search error: ${result.error}]` };
+    if (result.error) return `[arXiv search error: ${result.error}]`;
     appendSearchResultsCard(aiMsgId, result.results, `arXiv: ${cmd.query}`, 'search', result.engine);
     ctxAutoSaveSearch(result.results, `arXiv: ${cmd.query}`, 'search');
-    return { role: 'user', content: formatSearchResultsForLLM(result.results, `arXiv: ${cmd.query}`) };
+    return formatSearchResultsForLLM(result.results, `arXiv: ${cmd.query}`);
   }
   if (cmd.type === 'search_scholar') {
     showSearchStatus(aiMsgId, 'search', `Scholar: ${cmd.query}`);
     const result = await doScholarSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return { role: 'user', content: `[Scholar search error: ${result.error}]` };
+    if (result.error) return `[Scholar search error: ${result.error}]`;
     appendSearchResultsCard(aiMsgId, result.results, `Scholar: ${cmd.query}`, 'search', result.engine);
     ctxAutoSaveSearch(result.results, `Scholar: ${cmd.query}`, 'search');
-    return { role: 'user', content: formatSearchResultsForLLM(result.results, `Scholar: ${cmd.query}`) };
+    return formatSearchResultsForLLM(result.results, `Scholar: ${cmd.query}`);
   }
   if (cmd.type === 'search_github') {
     showSearchStatus(aiMsgId, 'search', `GitHub: ${cmd.query}`);
     const result = await doGithubSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return { role: 'user', content: `[GitHub search error: ${result.error}]` };
+    if (result.error) return `[GitHub search error: ${result.error}]`;
     appendSearchResultsCard(aiMsgId, result.results, `GitHub: ${cmd.query}`, 'search', result.engine);
     ctxAutoSaveSearch(result.results, `GitHub: ${cmd.query}`, 'search');
-    return { role: 'user', content: formatSearchResultsForLLM(result.results, `GitHub: ${cmd.query}`) };
+    return formatSearchResultsForLLM(result.results, `GitHub: ${cmd.query}`);
   }
   if (cmd.type === 'search_google') {
     showSearchStatus(aiMsgId, 'search', `Google: ${cmd.query}`);
     const result = await doGoogleSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return { role: 'user', content: `[Google search error (${result.engine || '?'}): ${result.error}]` };
+    if (result.error) return `[Google search error (${result.engine || '?'}): ${result.error}]`;
     appendSearchResultsCard(aiMsgId, result.results, `Google: ${cmd.query}`, 'search', result.engine, result.fallback ? result.fallbackReason : null);
     ctxAutoSaveSearch(result.results, `Google: ${cmd.query}`, 'search');
-    return { role: 'user', content: formatSearchResultsForLLM(result.results, `Google: ${cmd.query}`) };
+    return formatSearchResultsForLLM(result.results, `Google: ${cmd.query}`);
   }
   if (cmd.type === 'fetch') {
     showSearchStatus(aiMsgId, 'fetch', cmd.url);
     const result = await fetchWebPage(cmd.url, cmdSignal);
-    if (result.error) return { role: 'user', content: `[Fetch error: ${result.error}]` };
+    if (result.error) return `[Fetch error: ${result.error}]`;
     appendFetchResultCard(aiMsgId, cmd.url, result.content);
     ctxAutoSaveFetch(cmd.url, result.content);
-    return { role: 'user', content: result.content };
+    return result.content;
   }
   if (cmd.type === 'ctx_read') {
     const buf = getCtxBuffer();
     const item = buf.find(i => i.id === cmd.id);
-    if (!item) return { role: 'user', content: `[缓存读取失败: ID=${cmd.id} 不存在]` };
+    if (!item) return `[缓存读取失败: ID=${cmd.id} 不存在]`;
     showSearchStatus(aiMsgId, 'fetch', `读取缓存: ${item.name}`);
     item.readCount = (item.readCount || 0) + 1;
     item.readThisTurn = true;
     saveState(); renderCtxBuffer();
     let content = item.content;
     if (content.length > 15000) content = content.slice(0, 15000) + `\n\n[...已截断，原始 ${item.content.length} 字符]`;
-    return { role: 'user', content: `[缓存内容: ${item.name}]\n${content}` };
+    return `[缓存内容: ${item.name}]\n${content}`;
   }
   if (cmd.type === 'ctx_delete') {
     const conv = getActiveConv();
     if (conv) {
-      const buf = conv.ctxBuffer || [];
+      const buf = conv.contextBuffer || [];
       const idx2 = buf.findIndex(i => i.id === cmd.id);
       if (idx2 !== -1) {
         const name = buf[idx2].name;
         buf.splice(idx2, 1);
         saveState(); renderCtxBuffer(); updateCtxBtnBadge();
-        return { role: 'user', content: `[已删除缓存: ${name}]` };
+        return `[已删除缓存: ${name}]`;
       }
     }
-    return { role: 'user', content: `[缓存删除失败: ID=${cmd.id} 不存在]` };
+    return `[缓存删除失败: ID=${cmd.id} 不存在]`;
   }
+  return `[未知工具类型: ${cmd.type}]`;
 }
 
 // ── 搜索/抓取 UI 辅助函数 ──
@@ -264,24 +255,8 @@ function ctxSaveFetchById(saveId) {
   if (data) ctxSaveFromFetch(data.url, data.content);
 }
 
-// ── 清理搜索指令标记 ──
-function cleanDisplayCmds(display) {
-  display = display.replace(/\[SEARCH(?:_ARXIV|_SCHOLAR|_GITHUB|_GOOGLE)?\][\s\S]*?\[\/SEARCH(?:_ARXIV|_SCHOLAR|_GITHUB|_GOOGLE)?\]/gi, '\n\n🔍 *正在搜索...*\n\n');
-  display = display.replace(/\[FETCH\][\s\S]*?\[\/FETCH\]/gi, '\n\n🌐 *正在抓取网页...*\n\n');
-  display = display.replace(/\[CTX_READ\][\s\S]*?\[\/CTX_READ\]/gi, '\n\n📖 *正在读取缓存...*\n\n');
-  display = display.replace(/\[CTX_DELETE\][\s\S]*?\[\/CTX_DELETE\]/gi, '\n\n🗑 *正在清理缓存...*\n\n');
-  display = display.replace(/\[SEARCH(?:_ARXIV|_SCHOLAR|_GITHUB|_GOOGLE)?\][^\[]*$/gim, '\n\n🔍 *正在准备搜索...*');
-  display = display.replace(/\[FETCH\][^\[]*$/gim, '\n\n🌐 *正在准备抓取...*');
-  display = display.replace(/\[CTX_READ\][^\[]*$/gim, '\n\n📖 *正在读取缓存...*');
-  display = display.replace(/\[CTX_DELETE\][^\[]*$/gim, '\n\n🗑 *正在清理缓存...*');
-  display = display.replace(/\[SEARCH(?:_ARXIV|_SCHOLAR|_GITHUB|_GOOGLE)?\][^\[]*(?=\[)/gi, '\n\n🔍 *正在搜索...*\n\n');
-  display = display.replace(/\[FETCH\][^\[]*(?=\[)/gi, '\n\n🌐 *正在抓取网页...*\n\n');
-  display = display.replace(/\[CTX_READ\][^\[]*(?=\[)/gi, '\n\n📖 *正在读取缓存...*\n\n');
-  display = display.replace(/\[CTX_DELETE\][^\[]*(?=\[)/gi, '\n\n🗑 *正在清理缓存...*\n\n');
-  display = display.replace(/\[\/(SEARCH|SEARCH_ARXIV|SEARCH_SCHOLAR|SEARCH_GITHUB|SEARCH_GOOGLE|FETCH|CTX_READ|CTX_DELETE)\]/gi, '');
-  return display;
-}
-
+// ── 清理历史遗留的标签式指令标记（原生 function calling 下模型不再输出这些标签，
+//    但旧对话或个别模型仍可能残留，保留此清理逻辑以兼容显示） ──
 function cleanSearchMarkers(text) {
   const searchTypes = ['SEARCH', 'SEARCH_ARXIV', 'SEARCH_SCHOLAR', 'SEARCH_GITHUB', 'SEARCH_GOOGLE'];
   for (const tag of searchTypes) {

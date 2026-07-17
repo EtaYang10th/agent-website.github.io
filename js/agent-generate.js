@@ -15,7 +15,8 @@ async function doGenerate(conv, userMsgId) {
   let searchRound = 0;
   const MAX_SEARCH_ROUNDS = 20;
   let accumulatedContent = '';
-  let extraMessages = [];
+  // convoTail: 本轮生成过程中追加到对话末尾的消息（assistant(tool_calls) 与 tool 结果交替）
+  let convoTail = [];
   let consecutiveEmptyRounds = 0;
   let consecutiveDupRounds = 0;  // 连续重复指令计数
   const globalSeenCmds = new Set(); // 跨轮指令去重
@@ -23,13 +24,10 @@ async function doGenerate(conv, userMsgId) {
   try {
   while (searchRound <= MAX_SEARCH_ROUNDS) {
     const messages = buildApiMessages(conv, userMsgId);
-    if (accumulatedContent || extraMessages.length) {
-      if (accumulatedContent) messages.push({ role: 'assistant', content: accumulatedContent });
-      for (const em of extraMessages) messages.push(em);
-    }
+    for (const em of convoTail) messages.push(em);
 
     const totalMsgChars = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0);
-    console.log(`[Agent 循环] 第 ${searchRound} 轮, messages: ${messages.length} 条, 总字符: ${totalMsgChars}, extraMessages: ${extraMessages.length} 条`);
+    console.log(`[Agent 循环] 第 ${searchRound} 轮, messages: ${messages.length} 条, 总字符: ${totalMsgChars}, convoTail: ${convoTail.length} 条`);
     if (searchRound > 0) {
       showSearchStatus(aiMsgId, 'search', `第 ${searchRound + 1} 轮分析中 (上下文 ${Math.round(totalMsgChars/1000)}k 字符)...`);
     }
@@ -44,7 +42,8 @@ async function doGenerate(conv, userMsgId) {
         if (sysMsg) messages.push(sysMsg);
         if (userMsg) messages.push(userMsg);
         messages.push({ role: 'assistant', content: summary });
-        for (const em of extraMessages) messages.push(em);
+        // 压缩后丢弃未完成的 tool_calls 尾巴（总结已包含其信息），避免 tool 消息失配
+        convoTail = [];
         accumulatedContent = summary;
         conv.tree[aiMsgId].content = summary;
         renderChat();
@@ -52,11 +51,12 @@ async function doGenerate(conv, userMsgId) {
       } catch (sumErr) {
         console.warn('LLM 总结失败，回退到硬截断:', sumErr.message);
         const sysMsg = messages[0]?.role === 'system' ? messages.shift() : null;
-        const kept = messages.slice(-6);
+        const userMsg = messages.find(m => m.role === 'user' && !m.content?.startsWith?.('['));
         messages.length = 0;
         if (sysMsg) messages.push(sysMsg);
-        messages.push({ role: 'user', content: '[注意：上下文过长且总结失败，中间内容已省略。请基于最近的搜索结果继续回答。]' });
-        for (const m of kept) messages.push(m);
+        if (userMsg) messages.push(userMsg);
+        messages.push({ role: 'user', content: '[注意：上下文过长且总结失败，中间内容已省略。请基于已获取的信息继续回答。]' });
+        convoTail = [];
       }
       hideSearchStatus(aiMsgId);
     }
@@ -69,6 +69,7 @@ async function doGenerate(conv, userMsgId) {
     } else if (isThinkingModel) {
       messages.unshift({ role: 'system', content: '[IMPORTANT] You MUST wrap your internal reasoning inside <think>...</think> tags BEFORE your final answer. Always output <think> first, write your full chain-of-thought inside, then close with </think>, and only then write your actual response. Never skip the <think> block.' });
     }
+    const tools = getToolDefinitions();
     const body = {
       model: cfg.model, messages,
       temperature: isThinkingModel ? 1 : cfg.temperature,
@@ -76,6 +77,7 @@ async function doGenerate(conv, userMsgId) {
       stream: true,
       stream_options: { include_usage: true },
     };
+    if (tools.length) { body.tools = tools; body.tool_choice = 'auto'; }
 
     let apiTimedOut = false;
     let apiTimeoutId;
@@ -105,64 +107,87 @@ async function doGenerate(conv, userMsgId) {
         break;
       }
 
-      let newContent = await handleStreamResponseAgent(resp, conv, aiMsgId);
-      console.log(`[Agent 循环] 第 ${searchRound} 轮: 流式读取完成, newContent 长度: ${newContent.length}`);
+      const streamResult = await handleStreamResponseAgent(resp, conv, aiMsgId);
+      const newContent = streamResult.content || '';
+      const rawToolCalls = streamResult.toolCalls || [];
+      console.log(`[Agent 循环] 第 ${searchRound} 轮: 流式读取完成, content=${newContent.length}字符, tool_calls=${rawToolCalls.length}, finish=${streamResult.finishReason}`);
 
-      const agentCmds = parseAgentCommands(newContent);
-      console.log(`[Agent 循环] 第 ${searchRound} 轮: 解析到 ${agentCmds.length} 条指令`, agentCmds.map(c => `${c.type}:${c.query||c.url||c.id||'?'}`));
-      if (!agentCmds.length || !STATE.searchMode || !$('cfgSearchEnabled').checked) {
-        console.log(`[Agent 循环] 第 ${searchRound} 轮: 无指令或搜索未启用，退出循环`);
+      // 无工具调用（或搜索关闭）→ 模型已给出最终回答，退出循环
+      if (!rawToolCalls.length || !STATE.searchMode || !$('cfgSearchEnabled').checked) {
+        console.log(`[Agent 循环] 第 ${searchRound} 轮: 无工具调用或搜索未启用，退出循环`);
         break;
       }
 
-      // 跨轮去重：过滤掉之前已经执行过的完全相同的指令
-      const dedupedCmds = agentCmds.filter(cmd => {
+      // 把原生 tool_calls 解析为内部指令（含 toolCallId / toolName）
+      const agentCmds = toolCallsToCommands(rawToolCalls);
+      console.log(`[Agent 循环] 第 ${searchRound} 轮: 解析到 ${agentCmds.length} 条工具调用`, agentCmds.map(c => `${c.type}:${c.query||c.url||c.id||'?'}`));
+
+      // 保证每个 tool_call_id 都有且仅有一条 tool 响应：为解析失败/未知的调用补错误响应
+      const coveredIds = new Set(agentCmds.map(c => c.toolCallId));
+      const invalidToolMsgs = [];
+      for (const tc of rawToolCalls) {
+        if (!coveredIds.has(tc.id)) {
+          invalidToolMsgs.push({ role: 'tool', tool_call_id: tc.id, name: tc.function?.name || 'unknown',
+            content: '[工具调用参数无法解析或工具不存在，已跳过。请检查参数格式后重试或改用其他方式。]' });
+        }
+      }
+
+      // 跨轮去重：对已执行过的完全相同调用，直接回填提示性 tool 结果（保证配对），不重复真正执行
+      const dedupedCmds = [];
+      const dupToolMsgs = [];
+      for (const cmd of agentCmds) {
         const key = `${cmd.type}:${cmd.query || cmd.url || cmd.id || ''}`;
         if (globalSeenCmds.has(key)) {
-          console.warn(`[Agent 循环] 跳过重复指令: ${key}`);
-          return false;
+          console.warn(`[Agent 循环] 跳过重复工具调用: ${key}`);
+          dupToolMsgs.push({ role: 'tool', tool_call_id: cmd.toolCallId, name: cmd.toolName,
+            content: '[该工具调用与之前完全相同，已跳过。请勿重复调用，直接基于已有结果作答。]' });
+        } else {
+          globalSeenCmds.add(key);
+          dedupedCmds.push(cmd);
         }
-        globalSeenCmds.add(key);
-        return true;
-      });
+      }
+
+      // 组装本轮的 assistant(tool_calls) 消息（content 为工具调用前的解释性文本）
+      const assistantToolMsg = { role: 'assistant', content: newContent || '', tool_calls: rawToolCalls };
+
       if (!dedupedCmds.length) {
         consecutiveDupRounds++;
-        console.warn(`[Agent 循环] 第 ${searchRound} 轮: 所有指令均为重复 (连续第 ${consecutiveDupRounds} 次)`);
+        console.warn(`[Agent 循环] 第 ${searchRound} 轮: 所有工具调用均为重复 (连续第 ${consecutiveDupRounds} 次)`);
+        // 仍需把 assistant(tool_calls) + 对应 tool 结果配对写入，否则下一轮请求会失配
+        convoTail.push(assistantToolMsg, ...dupToolMsgs, ...invalidToolMsgs);
         if (consecutiveDupRounds >= 2) {
-          console.warn(`[Agent 循环] 连续 ${consecutiveDupRounds} 轮重复指令，强制退出循环`);
+          console.warn(`[Agent 循环] 连续 ${consecutiveDupRounds} 轮重复工具调用，强制退出循环`);
           break;
         }
-        extraMessages.push({ role: 'user', content: '[系统提示] 你发出的所有工具调用都已经在之前的轮次中执行过了，请直接基于已有结果回答用户问题，不要再重复调用工具。' });
-        // 再做一次 API 调用让 AI 基于已有信息回答
+        convoTail.push({ role: 'user', content: '[系统提示] 你发出的所有工具调用都已经在之前的轮次中执行过了，请直接基于已有结果回答用户问题，不要再重复调用工具。' });
         searchRound++;
-        accumulatedContent = conv.tree[aiMsgId].content;
         continue;
       }
-      consecutiveDupRounds = 0; // 有新指令，重置计数
+      consecutiveDupRounds = 0; // 有新调用，重置计数
 
-      const firstCmdMatch = newContent.match(/\[(SEARCH|SEARCH_ARXIV|SEARCH_SCHOLAR|SEARCH_GITHUB|SEARCH_GOOGLE|FETCH|CTX_READ|CTX_DELETE)\]/i);
-      let contentBeforeCmds = '';
-      if (firstCmdMatch) contentBeforeCmds = newContent.slice(0, firstCmdMatch.index).trim();
-      conv.tree[aiMsgId].content = (accumulatedContent ? accumulatedContent : '') + (contentBeforeCmds ? contentBeforeCmds + '\n\n' : '');
-      renderChat();
+      // 把工具调用前的解释性文本累积进可见回答
+      if (newContent && newContent.trim()) {
+        conv.tree[aiMsgId].content = (accumulatedContent || '') + newContent.trim() + '\n\n';
+        accumulatedContent = conv.tree[aiMsgId].content;
+        renderChat();
+      }
 
       searchRound++;
-      accumulatedContent = conv.tree[aiMsgId].content;
-      extraMessages = [];
+      convoTail.push(assistantToolMsg, ...dupToolMsgs, ...invalidToolMsgs);
 
-      // 执行搜索/抓取指令
-      await executeAgentCommands(dedupedCmds, aiMsgId, conv, searchRound, extraMessages);
+      // 执行工具调用；结果以 role:'tool' 追加到 convoTail
+      const roundToolMsgs = [];
+      await executeAgentCommands(dedupedCmds, aiMsgId, conv, searchRound, roundToolMsgs);
+      convoTail.push(...roundToolMsgs);
 
       // 检测连续空结果，超过 3 轮强制退出
-      const hasUseful = extraMessages.some(m => m.content && m.content.length > 200 && !m.content.startsWith('['));
+      const hasUseful = roundToolMsgs.some(m => m.content && m.content.length > 200 && !m.content.startsWith('['));
       if (!hasUseful) {
         consecutiveEmptyRounds++;
         if (consecutiveEmptyRounds >= 3) {
           console.warn(`[Agent 循环] 连续 ${consecutiveEmptyRounds} 轮无有效结果，强制退出`);
-          extraMessages.push({ role: 'user', content: '[系统强制提示] 已连续多轮搜索无有效结果。请立即停止所有工具调用，直接基于已有信息回答用户问题。' });
-          // 最后一次 API 调用让 AI 总结回答
+          convoTail.push({ role: 'user', content: '[系统强制提示] 已连续多轮搜索无有效结果。请立即停止所有工具调用，直接基于已有信息回答用户问题。' });
           searchRound++;
-          accumulatedContent = conv.tree[aiMsgId].content;
           continue;
         }
       } else {
@@ -189,8 +214,8 @@ async function doGenerate(conv, userMsgId) {
     }
   }
 
-  // ── 循环退出后：如果搜索了多轮但最终没有有效输出，强制做一次总结调用 ──
-  if (searchRound > 0 && STATE.generating && extraMessages.length > 0) {
+  // ── 循环退出后：如果搜索了多轮但最终没有有效输出，强制做一次总结调用（禁用工具）──
+  if (searchRound > 0 && STATE.generating && convoTail.length > 0) {
     const currentContent = (conv.tree[aiMsgId].content || '').trim();
     const hasSubstantiveAnswer = currentContent.length > 300 &&
       !/\[系统提示\]|⚠️|已停止生成/.test(currentContent.slice(-200));
@@ -199,15 +224,16 @@ async function doGenerate(conv, userMsgId) {
       showSearchStatus(aiMsgId, 'search', '正在基于已收集信息生成回答...');
       try {
         const finalMessages = buildApiMessages(conv, userMsgId);
-        if (accumulatedContent) finalMessages.push({ role: 'assistant', content: accumulatedContent });
-        for (const em of extraMessages) finalMessages.push(em);
-        finalMessages.push({ role: 'user', content: '[系统强制指令] 你已经完成了所有搜索和资料收集。现在必须立即基于已收集的所有信息，直接回答用户的问题。禁止再使用任何工具调用（SEARCH/FETCH/CTX_READ等）。请给出完整、详细、有条理的回答。' });
+        // 保留完整的 assistant(tool_calls)/tool 配对，确保消息结构合法
+        for (const em of convoTail) finalMessages.push(em);
+        finalMessages.push({ role: 'user', content: '[系统强制指令] 你已经完成了所有搜索和资料收集。现在必须立即基于已收集的所有信息，直接回答用户的问题。禁止再调用任何工具。请给出完整、详细、有条理的回答。' });
         const finalUrl = joinUrl(cfg.baseUrl, 'chat/completions');
         const finalBody = {
           model: cfg.model, messages: finalMessages,
           temperature: cfg.temperature, max_tokens: cfg.maxTokens,
           stream: true, stream_options: { include_usage: true },
         };
+        // 不传 tools 字段 → 模型无法再发起工具调用，强制直接作答
         STATE.abortCtrl = new AbortController();
         const finalResp = await fetch(finalUrl, {
           method: 'POST', headers: headers(cfg.apiKey),

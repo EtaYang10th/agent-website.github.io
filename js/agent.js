@@ -2,142 +2,90 @@
    ETA (Edge Thin Agent) — Agent Loop, Stream, Command Parsing, Send
    ============================================================ */
 
-// ── 指令解析 ──
-function parseAgentCommands(text) {
-  const cmds = [];
-  const seen = new Set();
-  text = text.replace(/`(\[(?:SEARCH|SEARCH_ARXIV|SEARCH_SCHOLAR|SEARCH_GITHUB|SEARCH_GOOGLE|FETCH|CTX_READ|CTX_DELETE)[^\]]*\])`/gi, '$1');
-  text = text.replace(/`(\[\/(?:SEARCH|SEARCH_ARXIV|SEARCH_SCHOLAR|SEARCH_GITHUB|SEARCH_GOOGLE|FETCH|CTX_READ|CTX_DELETE)\])`/gi, '$1');
+// ── 工具定义（OpenAI 原生 function calling） ──
+// 工具名 → 内部指令类型的映射（executeSingleCommand 使用）
+const TOOL_NAME_TO_CMD = {
+  search_web: { type: 'search', field: 'query' },
+  search_google: { type: 'search_google', field: 'query' },
+  search_arxiv: { type: 'search_arxiv', field: 'query' },
+  search_scholar: { type: 'search_scholar', field: 'query' },
+  search_github: { type: 'search_github', field: 'query' },
+  fetch_page: { type: 'fetch', field: 'url' },
+  ctx_read: { type: 'ctx_read', field: 'id' },
+  ctx_delete: { type: 'ctx_delete', field: 'id' },
+};
 
-  const tagTypes = [
-    { tag: 'SEARCH', type: 'search', field: 'query' },
-    { tag: 'SEARCH_ARXIV', type: 'search_arxiv', field: 'query' },
-    { tag: 'SEARCH_SCHOLAR', type: 'search_scholar', field: 'query' },
-    { tag: 'SEARCH_GITHUB', type: 'search_github', field: 'query' },
-    { tag: 'SEARCH_GOOGLE', type: 'search_google', field: 'query' },
-    { tag: 'FETCH', type: 'fetch', field: 'url' },
-    { tag: 'CTX_READ', type: 'ctx_read', field: 'id' },
-    { tag: 'CTX_DELETE', type: 'ctx_delete', field: 'id' },
+function getToolDefinitions() {
+  if (!STATE.searchMode || !$('cfgSearchEnabled').checked) return [];
+  const fn = (name, description, props, required) => ({
+    type: 'function',
+    function: { name, description, parameters: { type: 'object', properties: props, required } },
+  });
+  const q = { query: { type: 'string', description: 'Search keywords' } };
+  const tools = [
+    fn('search_web', 'General web search (Google via SerpAPI, Brave fallback). Use for general information.', q, ['query']),
+    fn('search_google', 'High-quality Google search (SerpAPI). Prefer this for general info.', q, ['query']),
+    fn('search_arxiv', 'Search arXiv papers (returns title, authors, abstract).', q, ['query']),
+    fn('search_scholar', 'Academic paper search (Semantic Scholar / OpenAlex / CrossRef).', q, ['query']),
+    fn('search_github', 'Search GitHub repositories, sorted by stars.', q, ['query']),
+    fn('fetch_page', 'Fetch and extract the readable content of a web page. arXiv links auto-return metadata + full text. Do NOT use on Google/Scholar result pages.',
+      { url: { type: 'string', description: 'Full URL starting with http(s)://' } }, ['url']),
   ];
-
-  function addCmd(type, field, val) {
-    val = val.trim().replace(/[\"\*\`\u201c\u201d]+$/g, '').replace(/^[\"\*\`\u201c\u201d]+/g, '').trim();
-    if (!val) return;
-    if ((field === 'query') && val.length < 5) return;
-    const key = type + ':' + val;
-    if (seen.has(key)) return;
-    seen.add(key);
-    cmds.push({ type, [field]: val });
+  const buf = getCtxBuffer();
+  if (buf.length) {
+    tools.push(fn('ctx_read', 'Read the full content of a knowledge-buffer entry by its ID.',
+      { id: { type: 'string', description: 'Buffer entry ID from the index' } }, ['id']));
+    tools.push(fn('ctx_delete', 'Delete a knowledge-buffer entry no longer needed, by its ID.',
+      { id: { type: 'string', description: 'Buffer entry ID from the index' } }, ['id']));
   }
+  return tools;
+}
 
-  for (const { tag, type, field } of tagTypes) {
-    const closedRe = new RegExp(`\\[${tag}\\]\\s*([\\s\\S]*?)\\s*\\[\\/${tag}\\]`, 'gi');
-    let m;
-    while ((m = closedRe.exec(text)) !== null) { addCmd(type, field, m[1]); }
-    const badCloseRe = new RegExp(`\\[${tag}\\]\\s*([\\s\\S]*?)\\s*(?:\\[\\\\${tag}\\]|\\[${tag}\\/\\])`, 'gi');
-    while ((m = badCloseRe.exec(text)) !== null) { addCmd(type, field, m[1]); }
-    const openRe = new RegExp(`\\[${tag}\\]\\s*([^\\[\\]]+?)(?:\\s*$|\\s*(?=\\[))`, 'gim');
-    while ((m = openRe.exec(text)) !== null) {
-      const fullMatch = m[0];
-      const after = text.slice(m.index + fullMatch.length, m.index + fullMatch.length + 50);
-      if (new RegExp(`^\\s*\\[\\/${tag}\\]`, 'i').test(after)) continue;
-      addCmd(type, field, m[1]);
-    }
+// 把流式累积的 tool_calls（arguments 为 JSON 字符串）解析为内部 cmd 列表
+function toolCallsToCommands(toolCalls) {
+  const cmds = [];
+  for (const tc of (toolCalls || [])) {
+    const name = tc.function?.name;
+    const mapping = TOOL_NAME_TO_CMD[name];
+    if (!mapping) { console.warn('[Tools] 未知工具:', name); continue; }
+    let args = {};
+    try { args = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}; }
+    catch (e) { console.warn(`[Tools] 解析 arguments 失败 (${name}): ${e.message}`, tc.function?.arguments); continue; }
+    const val = (args[mapping.field] || '').toString().trim();
+    if (!val) { console.warn(`[Tools] 工具 ${name} 缺少字段 ${mapping.field}`); continue; }
+    cmds.push({ type: mapping.type, [mapping.field]: val, toolCallId: tc.id, toolName: name });
   }
   return cmds;
 }
 
+// 联网工具的使用指南（原生 function calling，工具 schema 单独通过 tools 字段传递）
 function getSearchSystemPrompt() {
   if (!STATE.searchMode || !$('cfgSearchEnabled').checked) return '';
   const isZh = STATE.lang === 'zh';
   if (isZh) {
-    return `\n\n[联网工具]
-你拥有联网能力，可以搜索和抓取网页。当需要时请使用以下工具：
+    return `\n\n[联网工具使用指南]
+你拥有联网能力，可通过 function calling 调用以下工具：search_web / search_google（通用搜索）、search_arxiv / search_scholar（学术论文）、search_github（代码仓库）、fetch_page（抓取网页正文）、ctx_read / ctx_delete（知识库缓存读写）。
 
-1. 通用网页搜索（Google via SerpAPI）：
-[SEARCH]搜索关键词[/SEARCH]
-
-2. Google 搜索（高质量，推荐优先使用）：
-[SEARCH_GOOGLE]搜索关键词[/SEARCH_GOOGLE]
-
-3. arXiv 论文搜索（直接查询 arXiv API，返回标题、作者、摘要）：
-[SEARCH_ARXIV]搜索关键词[/SEARCH_ARXIV]
-
-4. 学术论文搜索（Semantic Scholar，覆盖多个学术数据库）：
-[SEARCH_SCHOLAR]搜索关键词[/SEARCH_SCHOLAR]
-
-5. GitHub 仓库搜索（按 star 排序）：
-[SEARCH_GITHUB]搜索关键词[/SEARCH_GITHUB]
-
-6. 抓取指定网页内容：
-[FETCH]https://example.com/page[/FETCH]
-
-7. 读取知识库缓存条目（根据索引中的 ID）：
-[CTX_READ]缓存ID[/CTX_READ]
-
-8. 删除不再需要的知识库缓存条目：
-[CTX_DELETE]缓存ID[/CTX_DELETE]
-
-使用规则：
-- 每个工具调用必须包含开始和闭合标签，例如 [SEARCH_GOOGLE]关键词[/SEARCH_GOOGLE]，不要省略闭合标签
-- 不要用 [FETCH] 抓取 Google Scholar (scholar.google.com) 页面，它会被反爬拦截。查学术论文请用 [SEARCH_SCHOLAR] 或 [SEARCH_ARXIV]
-- 不要用 [FETCH] 抓取 Google 搜索结果页面 (google.com/search)，会被反爬。用 [SEARCH_GOOGLE] 代替
-- 搜索一般信息时，优先用 [SEARCH_GOOGLE]（质量最高），[SEARCH] 作为备选
-- 用户提到 URL 链接时，用 [FETCH] 抓取该网页内容
-- arXiv 链接会自动获取论文元数据和 HTML 全文，直接用 [FETCH] 即可
-- 搜索学术论文时，优先用 [SEARCH_ARXIV] 和 [SEARCH_SCHOLAR]，它们返回结构化的论文信息
-- 搜索代码/项目时，用 [SEARCH_GITHUB]
-- 知识库中有缓存资料时，先看标题索引，需要详细内容再用 [CTX_READ] 按需读取，不要一次性全部读取
-- 确认某条缓存不再需要时，用 [CTX_DELETE] 清理，保持知识库精简
-- 可以在一次回复中同时使用多个不同类型的工具
-- 大规模文献调研时，可以分多轮搜索，每轮用不同关键词和搜索源
-- 工具执行后系统会返回结果，你需要基于结果继续回答
-- 回答时请引用来源链接
-- 不要在不需要时使用工具`;
+使用原则：
+- 搜索一般信息时优先用 search_google（质量最高），search_web 作为备选。
+- 搜索学术论文用 search_arxiv 或 search_scholar；搜代码/项目用 search_github。
+- 用户提到 URL 时用 fetch_page 抓取；arXiv 链接会自动返回元数据和全文。
+- 不要用 fetch_page 抓取 Google 搜索结果页或 Google Scholar 页面（会被反爬拦截），请改用对应的 search_* 工具。
+- 需要多个信息时可以在一次回复中并行调用多个工具；大规模文献调研可分多轮、换关键词和来源。
+- 知识库有缓存时先看标题索引，需要详细内容再用 ctx_read 按需读取，不要一次性全部读取；确认某条不再需要时用 ctx_delete 清理。
+- 工具结果返回后基于结果继续回答，并引用来源链接。不需要时不要调用工具。`;
   } else {
-    return `\n\n[Web Tools]
-You have internet access and can search and scrape web pages. Use the following tools when needed:
+    return `\n\n[Web Tools Usage]
+You have internet access via function calling. Available tools: search_web / search_google (general search), search_arxiv / search_scholar (academic papers), search_github (repositories), fetch_page (scrape a page), ctx_read / ctx_delete (knowledge-buffer read/delete).
 
-1. General web search (Google via SerpAPI):
-[SEARCH]search keywords[/SEARCH]
-
-2. Google Search (high quality, recommended):
-[SEARCH_GOOGLE]search keywords[/SEARCH_GOOGLE]
-
-3. arXiv paper search (queries arXiv API, returns title, authors, abstract):
-[SEARCH_ARXIV]search keywords[/SEARCH_ARXIV]
-
-4. Academic paper search (Semantic Scholar, covers multiple databases):
-[SEARCH_SCHOLAR]search keywords[/SEARCH_SCHOLAR]
-
-5. GitHub repository search (sorted by stars):
-[SEARCH_GITHUB]search keywords[/SEARCH_GITHUB]
-
-6. Fetch a specific web page:
-[FETCH]https://example.com/page[/FETCH]
-
-7. Read a knowledge buffer entry (by ID from the index):
-[CTX_READ]bufferID[/CTX_READ]
-
-8. Delete a knowledge buffer entry no longer needed:
-[CTX_DELETE]bufferID[/CTX_DELETE]
-
-Rules:
-- Each tool call must include opening and closing tags, e.g. [SEARCH_GOOGLE]keywords[/SEARCH_GOOGLE]
-- NEVER use [FETCH] on Google Scholar (scholar.google.com) pages — they will be blocked by anti-scraping. Use [SEARCH_SCHOLAR] or [SEARCH_ARXIV] instead
-- NEVER use [FETCH] on Google search result pages (google.com/search) — they will be blocked. Use [SEARCH_GOOGLE] instead
-- For general info, prefer [SEARCH_GOOGLE] (highest quality), [SEARCH] as fallback
-- When the user mentions a URL, use [FETCH] to scrape it
-- arXiv links auto-fetch metadata and HTML full text, just use [FETCH]
-- For academic papers, prefer [SEARCH_ARXIV] and [SEARCH_SCHOLAR]
-- For code/projects, use [SEARCH_GITHUB]
-- When the knowledge buffer has cached items, check the title index first, use [CTX_READ] only when details are needed
-- Use [CTX_DELETE] to clean up unneeded buffer entries
-- You can use multiple tools in a single response
-- For large literature surveys, search in multiple rounds with different keywords
-- After tool execution, the system returns results — continue answering based on them
-- Cite source links in your answers
-- Do not use tools when not needed`;
+Principles:
+- For general info prefer search_google (highest quality), search_web as fallback.
+- For academic papers use search_arxiv or search_scholar; for code/projects use search_github.
+- When the user mentions a URL, use fetch_page; arXiv links auto-return metadata and full text.
+- Do NOT use fetch_page on Google search-result pages or Google Scholar pages (blocked by anti-scraping); use the corresponding search_* tool instead.
+- You may call multiple tools in one turn; for large literature surveys, search in multiple rounds with different keywords and sources.
+- When the knowledge buffer has entries, check the title index first and use ctx_read only when details are needed; use ctx_delete to remove entries no longer needed.
+- After tools return, continue answering based on the results and cite source links. Do not call tools when not needed.`;
   }
 }
 
