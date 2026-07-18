@@ -62,6 +62,7 @@ async function checkBalance() {
   const base = cfg.baseUrl.replace(/\/+$/, '');
   const bases = [base];
   if (base.endsWith('/v1')) bases.push(base.slice(0, -3).replace(/\/+$/, ''));
+  // /user/dashboard 优先（reAPI 风格代理，含 credits / remaining_days）
   const paths = ['/user/dashboard','/dashboard/billing/credit_grants','/dashboard/billing/subscription',
     '/billing/credit_grants','/billing/subscription','/balance'];
   for (const b of bases) {
@@ -72,7 +73,10 @@ async function checkBalance() {
         const data = await r.json();
         const summary = extractBalanceSummary(data);
         if (summary.length) {
-          showModal('💰 余额信息', `<div style="font-size:.9rem;line-height:2">${summary.map(s => `<div>${escHtml(s)}</div>`).join('')}</div>
+          const note = (data.total_input_tokens && data.total_output_tokens && data.total_input_tokens > data.total_output_tokens * 100)
+            ? `<div style="margin-top:10px;font-size:.75rem;color:var(--text3);line-height:1.6">ℹ️ 注：该代理上报的输入 token 统计存在已知虚高 bug（经实测不影响实际扣费），此处输入/累计 token 数字仅供参考。</div>`
+            : '';
+          showModal('💰 余额信息', `<div style="font-size:.9rem;line-height:2">${summary.map(s => `<div>${escHtml(s)}</div>`).join('')}</div>${note}
             <details style="margin-top:12px"><summary style="cursor:pointer;color:var(--text3);font-size:.8rem">原始数据</summary>
             <pre style="background:var(--input-bg);padding:12px;border-radius:8px;font-size:.78rem;overflow:auto;max-height:300px;margin-top:8px">${escHtml(JSON.stringify(data, null, 2))}</pre></details>`);
           return;
@@ -100,9 +104,14 @@ function extractBalanceSummary(data) {
   if (total === undefined && avail !== undefined && used !== undefined) total = avail + used;
   if (used === undefined && total !== undefined && avail !== undefined) used = total - avail;
   const s = [];
-  if (avail !== undefined) s.push('💰 可用余额: $' + avail.toFixed(4));
-  if (total !== undefined) s.push('📊 总额度: $' + total.toFixed(4));
-  if (used !== undefined) s.push('📈 已使用: $' + used.toFixed(4));
+  if (avail !== undefined) s.push('💰 剩余额度: ' + avail.toFixed(2) + ' credits');
+  if (total !== undefined) s.push('📊 累计获得: ' + total.toFixed(2) + ' credits');
+  if (used !== undefined) s.push('📈 累计消费: ' + used.toFixed(2) + ' credits');
+  // reAPI 风格：套餐信息
+  if (typeof data.plan === 'string') s.push('🎫 套餐: ' + data.plan + (data.status ? ` (${data.status})` : ''));
+  if (typeof data.remaining_days === 'number') s.push('⏳ 剩余天数: ' + data.remaining_days + ' 天');
+  if (typeof data.total_requests === 'number') s.push('🔢 累计请求: ' + data.total_requests.toLocaleString() + ' 次');
+  if (typeof data.total_output_tokens === 'number') s.push('📤 累计输出: ' + data.total_output_tokens.toLocaleString() + ' tokens');
   return s;
 }
 

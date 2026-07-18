@@ -76,6 +76,14 @@
       <input type="checkbox" id="cfgSearchEnabled" checked>
       <label for="cfgSearchEnabled">启用 Agent 联网能力（搜索+抓取网页）</label>
     </div>
+    <div class="config-row" id="toolChoiceRow">
+      <label id="toolChoiceLabel">工具调用策略</label>
+      <select id="cfgToolChoice" onchange="setToolChoice(this.value)"
+        style="width:100%;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:.82rem;outline:none">
+        <option value="auto">自动（模型自行决定是否调用）</option>
+        <option value="none">禁用工具（仅用已有知识回答）</option>
+      </select>
+    </div>
     <div style="display:flex;gap:6px;margin-top:4px">
       <button class="btn btn-ghost btn-sm" style="flex:1" onclick="showModelListModal()">📋 模型列表</button>
       <button class="btn btn-ghost btn-sm" style="flex:1" onclick="checkBalance()">💰 余额</button>

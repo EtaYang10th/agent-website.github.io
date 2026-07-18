@@ -107,11 +107,13 @@ function renderChat() {
   container.innerHTML = html;
 
   const msgCount = path.length;
-  let totalTokens = 0;
+  // 注：该代理上报的 prompt_tokens 存在虚高 bug（不影响实际扣费），
+  // 故只累计可信的 completion_tokens（实际生成量）。
+  let outTokens = 0;
   for (const node of path) {
-    if (node.usage) totalTokens += node.usage.total_tokens;
+    if (node.usage) outTokens += (node.usage.completion_tokens || 0);
   }
-  const tokenInfo = totalTokens > 0 ? ` · ${totalTokens.toLocaleString()} tokens` : '';
+  const tokenInfo = outTokens > 0 ? ` · ${outTokens.toLocaleString()} 输出tokens` : '';
   $('topbarInfo').textContent = `${conv.title} · ${msgCount} 条消息${tokenInfo}`;
 
   requestAnimationFrame(() => {
@@ -158,9 +160,10 @@ function renderMessageNode(conv, node) {
   const modelTag = node.model ? `<span class="msg-model-tag">${escHtml(node.model)}</span>` : '';
 
   let tokenTag = '';
-  if (node.usage) {
+  if (node.usage && node.usage.completion_tokens) {
     const u = node.usage;
-    tokenTag = `<span class="msg-model-tag" title="Prompt: ${u.prompt_tokens} · Completion: ${u.completion_tokens} · Total: ${u.total_tokens}">🎯 ${u.total_tokens} tokens</span>`;
+    // 仅展示可信的输出 token；prompt_tokens 因代理 bug 虚高，放入 title 并标注仅供参考
+    tokenTag = `<span class="msg-model-tag" title="输出 (completion): ${u.completion_tokens}${u.prompt_tokens ? ` · 上报输入(prompt,该代理虚高仅供参考): ${u.prompt_tokens}` : ''}">🎯 ${u.completion_tokens} 输出tokens</span>`;
   }
 
   const actions = isUser

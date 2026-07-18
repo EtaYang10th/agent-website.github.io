@@ -120,6 +120,13 @@ function toggleSearchMode() {
   toast((isZh ? '搜索模式: ' : 'Search Mode: ') + (STATE.searchMode ? (isZh ? '已开启' : 'ON') : (isZh ? '已关闭' : 'OFF')), 'info');
 }
 
+function setToolChoice(val) {
+  STATE.toolChoice = (val === 'none') ? 'none' : 'auto';
+  saveConfig();
+  const labels = { auto: '自动', none: '禁用工具' };
+  toast((STATE.lang === 'zh' ? '工具调用策略: ' : 'Tool choice: ') + (labels[STATE.toolChoice] || STATE.toolChoice), 'info');
+}
+
 function toggleSidebar() {
   $('sidebar').classList.toggle('collapsed');
 }

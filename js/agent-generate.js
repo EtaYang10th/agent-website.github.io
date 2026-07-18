@@ -63,13 +63,9 @@ async function doGenerate(conv, userMsgId) {
 
     const url = joinUrl(cfg.baseUrl, 'chat/completions');
     const isThinkingModel = /thinking|think/i.test(cfg.model);
-    if (isThinkingModel && messages.length > 0 && messages[0].role === 'system') {
-      const thinkInject = '\n\n[IMPORTANT] You MUST wrap your internal reasoning inside <think>...</think> tags BEFORE your final answer. Always output <think> first, write your full chain-of-thought inside, then close with </think>, and only then write your actual response. Never skip the <think> block.';
-      messages[0].content += thinkInject;
-    } else if (isThinkingModel) {
-      messages.unshift({ role: 'system', content: '[IMPORTANT] You MUST wrap your internal reasoning inside <think>...</think> tags BEFORE your final answer. Always output <think> first, write your full chain-of-thought inside, then close with </think>, and only then write your actual response. Never skip the <think> block.' });
-    }
-    const tools = getToolDefinitions();
+    // 注：原生 thinking 模型会自行推理，其思考内容通过 delta.reasoning_content/thinking
+    // 字段或 <think> 标签返回（见 handleStreamResponseAgent），无需再强制注入 <think> 指令。
+    const tools = (STATE.toolChoice === 'none') ? [] : getToolDefinitions();
     const body = {
       model: cfg.model, messages,
       temperature: isThinkingModel ? 1 : cfg.temperature,

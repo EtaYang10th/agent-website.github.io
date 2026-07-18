@@ -16,6 +16,7 @@ const STATE = {
   conversations: {},
   activeConvId: null,
   searchMode: true,
+  toolChoice: 'auto', // 'auto'(模型自行决定) | 'required'(强制至少调一次工具) | 'none'(禁用工具)
   generating: false,
   abortCtrl: null,
   attachments: [],
@@ -78,6 +79,7 @@ function saveConfig() {
       model: $('modelSelect').value,
       searchEnabled: $('cfgSearchEnabled').checked,
       searchMode: STATE.searchMode,
+      toolChoice: STATE.toolChoice,
       serpApiKey: $('cfgSerpApiKey').value,
       braveKey: $('cfgBraveKey').value,
       theme: STATE.theme,
@@ -106,6 +108,8 @@ function loadConfig() {
     }
     if (c.searchEnabled !== undefined) $('cfgSearchEnabled').checked = c.searchEnabled;
     if (c.searchMode !== undefined) STATE.searchMode = c.searchMode;
+    if (c.toolChoice !== undefined) STATE.toolChoice = c.toolChoice;
+    if ($('cfgToolChoice')) $('cfgToolChoice').value = STATE.toolChoice || 'auto';
     $('cfgSerpApiKey').value = c.serpApiKey || env.SERP_API_KEY || '';
     $('cfgBraveKey').value = c.braveKey || env.BRAVE_SEARCH_KEY || '';
     if (c.theme) STATE.theme = c.theme;
@@ -144,6 +148,7 @@ const I18N = {
     systemPrompt: 'System Prompt', temperature: 'Temperature', maxTokens: 'Max Tokens',
     serpApiKey: 'SerpAPI Key', braveKey: 'Brave Search Key',
     enableSearch: '启用 Agent 联网能力（搜索+抓取网页）',
+    toolChoiceLabel: '工具调用策略',
     modelList: '📋 模型列表', balance: '💰 余额',
     ctxBuffer: '📚 对话缓存区', debugLog: '🐛 调试日志',
     exportConv: '导出对话', settings: '设置',
@@ -169,6 +174,7 @@ const I18N = {
     systemPrompt: 'System Prompt', temperature: 'Temperature', maxTokens: 'Max Tokens',
     serpApiKey: 'SerpAPI Key', braveKey: 'Brave Search Key',
     enableSearch: 'Enable Agent web access (search + scrape)',
+    toolChoiceLabel: 'Tool call policy',
     modelList: '📋 Models', balance: '💰 Balance',
     ctxBuffer: '📚 Context Buffer', debugLog: '🐛 Debug Log',
     exportConv: 'Export Chat', settings: 'Settings',
@@ -214,6 +220,13 @@ function applyI18n() {
   // Search toggle label
   const searchLabel = document.querySelector('#cfgSearchEnabled + label');
   if (searchLabel) searchLabel.textContent = t('enableSearch');
+  const toolChoiceLbl = $('toolChoiceLabel');
+  if (toolChoiceLbl) toolChoiceLbl.textContent = t('toolChoiceLabel');
+  const tcSel = $('cfgToolChoice');
+  if (tcSel && tcSel.options.length >= 2) {
+    tcSel.options[0].textContent = STATE.lang === 'zh' ? '自动（模型自行决定是否调用）' : 'Auto (model decides)';
+    tcSel.options[1].textContent = STATE.lang === 'zh' ? '禁用工具（仅用已有知识回答）' : 'Disabled (use existing knowledge only)';
+  }
 
   // Topbar
   const modelLabel = document.querySelector('.topbar-model span');
