@@ -13,7 +13,29 @@ async function doGenerate(conv, userMsgId) {
   renderChat();
 
   let searchRound = 0;
-  const MAX_SEARCH_ROUNDS = 20;
+  // 循环参数从第四期配置读取（js/eta-config.js），模块缺失时回退原硬编码值
+  const MAX_SEARCH_ROUNDS = (typeof etaCfg === 'function') ? etaCfg('maxRounds') : 20;
+  if (typeof timelineStart === 'function') timelineStart(aiMsgId);
+  /* Planner/Executor 分工（js/multi-model.js）：贵模型定计划、便宜模型跑工具循环。
+     未启用或模块缺失时 roles 两端都是顶栏当前模型，行为与原先一致。 */
+  const roles = (typeof mmRoleModels === 'function') ? mmRoleModels(cfg) : { planner: cfg.model, executor: cfg.model, active: false };
+  const loopModel = roles.executor || cfg.model;
+  if (roles.active) {
+    conv.tree[aiMsgId].model = loopModel;
+    console.log(`[Agent 循环] Planner/Executor: 计划=${roles.planner}, 执行=${loopModel}`);
+  }
+  // 计划模式：正式回答前先要一份 TODO（默认关闭，失败静默跳过）
+  let planPrompt = '';
+  const wantPlan = (typeof etaCfg === 'function') && (etaCfg('planMode') || roles.active);
+  if (typeof timelinePlan === 'function' && wantPlan) {
+    const userNode = conv.tree[userMsgId];
+    showSearchStatus(aiMsgId, 'search', STATE.lang === 'en' ? 'Planning...' : '正在制定计划...');
+    // 计划走 planner 模型；planMode 关闭但分工开启时也要出计划，否则分工没有意义
+    await timelinePlan(aiMsgId, Object.assign({}, cfg, { model: roles.planner || cfg.model }),
+      userNode ? (userNode.apiContent || userNode.content) : '', true);
+    planPrompt = timelinePlanPrompt(aiMsgId);
+    hideSearchStatus(aiMsgId);
+  }
   let accumulatedContent = '';
   // convoTail: 本轮生成过程中追加到对话末尾的消息（assistant(tool_calls) 与 tool 结果交替）
   let convoTail = [];
@@ -24,7 +46,9 @@ async function doGenerate(conv, userMsgId) {
   try {
   while (searchRound <= MAX_SEARCH_ROUNDS) {
     const messages = buildApiMessages(conv, userMsgId);
+    if (planPrompt && messages[0] && messages[0].role === 'system') messages[0].content += planPrompt;
     for (const em of convoTail) messages.push(em);
+    if (typeof timelineRoundStart === 'function') timelineRoundStart(aiMsgId, searchRound, '');
 
     const totalMsgChars = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0);
     console.log(`[Agent 循环] 第 ${searchRound} 轮, messages: ${messages.length} 条, 总字符: ${totalMsgChars}, convoTail: ${convoTail.length} 条`);
@@ -62,23 +86,27 @@ async function doGenerate(conv, userMsgId) {
     }
 
     const url = joinUrl(cfg.baseUrl, 'chat/completions');
-    const isThinkingModel = /thinking|think/i.test(cfg.model);
+    const isThinkingModel = /thinking|think/i.test(loopModel);
     // 注：原生 thinking 模型会自行推理，其思考内容通过 delta.reasoning_content/thinking
     // 字段或 <think> 标签返回（见 handleStreamResponseAgent），无需再强制注入 <think> 指令。
     const tools = (STATE.toolChoice === 'none') ? [] : getToolDefinitions();
     const body = {
-      model: cfg.model, messages,
+      model: loopModel, messages,
       temperature: isThinkingModel ? 1 : cfg.temperature,
       max_tokens: cfg.maxTokens,
       stream: true,
       stream_options: { include_usage: true },
     };
-    if (tools.length) { body.tools = tools; body.tool_choice = 'auto'; }
+    if (tools.length) {
+      body.tools = tools;
+      // 透传用户选择的策略（'none' 时 tools 本就为空，不会走到这里）
+      body.tool_choice = (STATE.toolChoice === 'required') ? 'required' : 'auto';
+    }
 
     let apiTimedOut = false;
     let apiTimeoutId;
     try {
-      const API_CALL_TIMEOUT = 120000;
+      const API_CALL_TIMEOUT = (typeof etaCfg === 'function') ? etaCfg('apiTimeout') : 120000;
       apiTimeoutId = setTimeout(() => {
         apiTimedOut = true;
         if (STATE.abortCtrl) STATE.abortCtrl.abort();
@@ -108,15 +136,19 @@ async function doGenerate(conv, userMsgId) {
       const rawToolCalls = streamResult.toolCalls || [];
       console.log(`[Agent 循环] 第 ${searchRound} 轮: 流式读取完成, content=${newContent.length}字符, tool_calls=${rawToolCalls.length}, finish=${streamResult.finishReason}`);
 
-      // 无工具调用（或搜索关闭）→ 模型已给出最终回答，退出循环
-      if (!rawToolCalls.length || !STATE.searchMode || !$('cfgSearchEnabled').checked) {
-        console.log(`[Agent 循环] 第 ${searchRound} 轮: 无工具调用或搜索未启用，退出循环`);
+      // 无工具调用（或所有工具类别都关闭）→ 模型已给出最终回答，退出循环
+      if (!rawToolCalls.length || !(isSearchToolsEnabled() || isCodeToolsEnabled())) {
+        console.log(`[Agent 循环] 第 ${searchRound} 轮: 无工具调用或工具未启用，退出循环`);
+        if (typeof timelineRoundEnd === 'function') {
+          timelineRoundEnd(aiMsgId, searchRound, { chars: newContent.length, note: STATE.lang === 'en' ? 'final answer' : '直接作答' });
+        }
+        if (typeof timelinePlanFinish === 'function') timelinePlanFinish(aiMsgId);
         break;
       }
 
       // 把原生 tool_calls 解析为内部指令（含 toolCallId / toolName）
       const agentCmds = toolCallsToCommands(rawToolCalls);
-      console.log(`[Agent 循环] 第 ${searchRound} 轮: 解析到 ${agentCmds.length} 条工具调用`, agentCmds.map(c => `${c.type}:${c.query||c.url||c.id||'?'}`));
+      console.log(`[Agent 循环] 第 ${searchRound} 轮: 解析到 ${agentCmds.length} 条工具调用`, agentCmds.map(c => `${c.type}:${(c.query||c.url||c.id||c.code||'?').slice(0,60)}`));
 
       // 保证每个 tool_call_id 都有且仅有一条 tool 响应：为解析失败/未知的调用补错误响应
       const coveredIds = new Set(agentCmds.map(c => c.toolCallId));
@@ -132,7 +164,7 @@ async function doGenerate(conv, userMsgId) {
       const dedupedCmds = [];
       const dupToolMsgs = [];
       for (const cmd of agentCmds) {
-        const key = `${cmd.type}:${cmd.query || cmd.url || cmd.id || ''}`;
+        const key = `${cmd.type}:${cmd.query || cmd.url || cmd.id || cmd.code || ''}`;
         if (globalSeenCmds.has(key)) {
           console.warn(`[Agent 循环] 跳过重复工具调用: ${key}`);
           dupToolMsgs.push({ role: 'tool', tool_call_id: cmd.toolCallId, name: cmd.toolName,
@@ -153,9 +185,15 @@ async function doGenerate(conv, userMsgId) {
         convoTail.push(assistantToolMsg, ...dupToolMsgs, ...invalidToolMsgs);
         if (consecutiveDupRounds >= 2) {
           console.warn(`[Agent 循环] 连续 ${consecutiveDupRounds} 轮重复工具调用，强制退出循环`);
+          if (typeof timelineRoundEnd === 'function') {
+            timelineRoundEnd(aiMsgId, searchRound, { chars: newContent.length, note: STATE.lang === 'en' ? 'forced exit: duplicates' : '重复调用过多，强制退出' });
+          }
           break;
         }
         convoTail.push({ role: 'user', content: '[系统提示] 你发出的所有工具调用都已经在之前的轮次中执行过了，请直接基于已有结果回答用户问题，不要再重复调用工具。' });
+        if (typeof timelineRoundEnd === 'function') {
+          timelineRoundEnd(aiMsgId, searchRound, { chars: newContent.length, note: STATE.lang === 'en' ? 'all duplicate calls' : '全为重复调用' });
+        }
         searchRound++;
         continue;
       }
@@ -168,13 +206,18 @@ async function doGenerate(conv, userMsgId) {
         renderChat();
       }
 
+      const roundIdxForTl = searchRound;
       searchRound++;
       convoTail.push(assistantToolMsg, ...dupToolMsgs, ...invalidToolMsgs);
 
       // 执行工具调用；结果以 role:'tool' 追加到 convoTail
       const roundToolMsgs = [];
-      await executeAgentCommands(dedupedCmds, aiMsgId, conv, searchRound, roundToolMsgs);
+      await executeAgentCommands(dedupedCmds, aiMsgId, conv, roundIdxForTl, roundToolMsgs);
       convoTail.push(...roundToolMsgs);
+      if (typeof timelineRoundEnd === 'function') {
+        timelineRoundEnd(aiMsgId, roundIdxForTl, { chars: newContent.length });
+      }
+      if (typeof timelinePlanAdvance === 'function') timelinePlanAdvance(aiMsgId, searchRound);
 
       // 检测连续空结果，超过 3 轮强制退出
       const hasUseful = roundToolMsgs.some(m => m.content && m.content.length > 200 && !m.content.startsWith('['));
@@ -192,9 +235,13 @@ async function doGenerate(conv, userMsgId) {
 
     } catch (e) {
       clearTimeout(apiTimeoutId);
+      if (typeof timelineRoundEnd === 'function') {
+        timelineRoundEnd(aiMsgId, searchRound, { note: (e.name === 'AbortError' ? (apiTimedOut ? 'API 超时' : '已中止') : ('错误: ' + e.message)).slice(0, 60) });
+      }
       if (e.name === 'AbortError') {
         if (apiTimedOut) {
-          conv.tree[aiMsgId].content += '\n\n⚠️ API 请求超时（120秒无响应），可能是上下文过长或服务端繁忙';
+          const secs = Math.round(((typeof etaCfg === 'function') ? etaCfg('apiTimeout') : 120000) / 1000);
+          conv.tree[aiMsgId].content += `\n\n⚠️ API 请求超时（${secs}秒无响应），可能是上下文过长或服务端繁忙`;
           toast('API 请求超时', 'fail');
           STATE.abortCtrl = new AbortController();
         } else {
@@ -225,7 +272,7 @@ async function doGenerate(conv, userMsgId) {
         finalMessages.push({ role: 'user', content: '[系统强制指令] 你已经完成了所有搜索和资料收集。现在必须立即基于已收集的所有信息，直接回答用户的问题。禁止再调用任何工具。请给出完整、详细、有条理的回答。' });
         const finalUrl = joinUrl(cfg.baseUrl, 'chat/completions');
         const finalBody = {
-          model: cfg.model, messages: finalMessages,
+          model: loopModel, messages: finalMessages,
           temperature: cfg.temperature, max_tokens: cfg.maxTokens,
           stream: true, stream_options: { include_usage: true },
         };
@@ -256,6 +303,7 @@ async function doGenerate(conv, userMsgId) {
     toast(`生成出错: ${outerErr.message}`, 'fail');
   } finally {
     hideSearchStatus(aiMsgId);
+    if (typeof timelineEnd === 'function') timelineEnd(aiMsgId);
     STATE.generating = false;
     STATE.abortCtrl = null;
     updateSendBtn();

@@ -15,13 +15,23 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<!-- DOMPurify: Markdown 渲染前净化，防止抓取内容被复述后注入脚本 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <!-- 样式 -->
 <link rel="stylesheet" href="css/styles.css">
+<!-- PWA：manifest 与图标都用相对路径，兼容 GitHub Pages 项目页子路径部署 -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#6366f1">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
 </head>
 <body>
 
 <!-- TOAST -->
 <div class="toast-container" id="toasts"></div>
+
+<!-- 移动端抽屉遮罩（窄屏下点击关闭侧栏/缓存区） -->
+<div class="drawer-scrim" id="drawerScrim" onclick="closeDrawers()"></div>
 
 <!-- IMAGE VIEWER -->
 <div class="img-viewer" id="imgViewer" style="display:none" onclick="this.style.display='none'">
@@ -37,6 +47,12 @@
   <div class="sidebar-section">
     <div class="sidebar-section-title">对话列表</div>
   </div>
+  <!-- 全局对话搜索：跨所有会话检索消息正文 -->
+  <div class="gs-wrap">
+    <input id="gsInput" class="gs-input" placeholder="🔍 搜索所有对话..."
+      oninput="gsInputChanged()" onkeydown="gsKey(event)">
+  </div>
+  <div class="gs-results" id="gsResults"></div>
   <div class="conv-list" id="convList"></div>
   <div class="config-panel" id="configPanel">
     <div class="config-row">
@@ -60,9 +76,12 @@
         <input id="cfgTemp" type="number" value="0.7" min="0" max="2" step="0.1">
       </div>
       <div class="config-row" style="flex:1">
-        <label>Max Tokens</label>
-        <input id="cfgMaxTok" type="number" value="200000" min="1" max="200000">
+        <label id="maxTokLabel">Max Tokens</label>
+        <input id="cfgMaxTok" type="number" value="8192" min="1" max="200000">
       </div>
+    </div>
+    <div class="config-hint" id="maxTokHint" style="font-size:.7rem;color:var(--text3);margin:-2px 0 6px;line-height:1.4">
+      单次<b>输出</b>上限（发给 API 的 max_tokens），不是上下文窗口。多数模型上限 4k–32k，填过大会返回 400。
     </div>
     <div class="config-row">
       <label>SerpAPI Key</label>
@@ -76,11 +95,20 @@
       <input type="checkbox" id="cfgSearchEnabled" checked>
       <label for="cfgSearchEnabled">启用 Agent 联网能力（搜索+抓取网页）</label>
     </div>
+    <div class="search-toggle" style="margin-bottom:2px">
+      <input type="checkbox" id="cfgCodeEnabled" onchange="saveConfig()">
+      <label for="cfgCodeEnabled" id="codeEnabledLabel">启用 Agent 代码执行（Python / JS 本地沙箱）</label>
+    </div>
+    <div class="config-hint" id="codeEnabledHint" style="font-size:.68rem;color:var(--text3);margin:0 0 8px;line-height:1.45">
+      开启后模型可在<b>你的浏览器里执行代码</b>。Python 跑在 Pyodide WASM 沙箱内，无法访问本机文件系统，
+      只能读取你显式放入缓存区的文件；JS 跑在 Web Worker 里。首次调用需下载约 10MB 运行时。
+    </div>
     <div class="config-row" id="toolChoiceRow">
       <label id="toolChoiceLabel">工具调用策略</label>
       <select id="cfgToolChoice" onchange="setToolChoice(this.value)"
         style="width:100%;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:.82rem;outline:none">
         <option value="auto">自动（模型自行决定是否调用）</option>
+        <option value="required">强制调用（至少调用一次工具）</option>
         <option value="none">禁用工具（仅用已有知识回答）</option>
       </select>
     </div>
@@ -106,7 +134,9 @@
     <div class="topbar-actions">
       <button class="icon-btn" id="ctxToggleBtn" onclick="toggleCtxPanel()" title="缓存区">📚</button>
       <button class="icon-btn" id="debugToggleBtn" onclick="toggleDebugPanel()" title="调试日志" style="position:relative">🐛<span class="debug-badge" id="debugBadge"></span></button>
-      <button class="icon-btn" onclick="exportConversation()" title="导出对话">📥</button>
+      <button class="icon-btn" id="arenaBtn" onclick="showArenaModal()" title="模型竞技场（多模型并排对比）">⚔️</button>
+      <button class="icon-btn" id="promptLibBtn" onclick="showPromptLibraryModal()" title="Prompt 模板库">📝</button>
+      <button class="icon-btn" id="exportBtn" onclick="showExportModal()" title="导出对话">📥</button>
       <button class="icon-btn" onclick="showSettingsModal()" title="设置">⚙</button>
     </div>
   </div>
@@ -129,6 +159,8 @@
           <input type="file" id="fileInput" multiple accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.json,.csv,.xml,.html,.css,.java,.c,.cpp,.h,.go,.rs,.rb,.php,.sh,.yaml,.yml,.toml,.sql,.r,.m,.docx,.pptx,.xlsx,.doc,.ppt,.xls,.tex,.log,.ini,.cfg,.conf,.env,.gitignore,.dockerfile" style="display:none" onchange="handleFileSelect(event)">
           <button class="icon-btn" onclick="document.getElementById('fileInput').click()" title="上传文件">📎</button>
           <button class="icon-btn" onclick="toggleSearchMode()" id="searchToggle" title="搜索模式: 开" style="color:var(--accent2)">🔍</button>
+          <!-- 语音输入：浏览器不支持 SpeechRecognition 时由 js/voice.js 移除此按钮 -->
+          <button class="icon-btn" id="micBtn" onclick="voiceToggleInput()" title="语音输入">🎤</button>
           <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="发送">▶</button>
         </div>
       </div>
@@ -160,6 +192,12 @@
     <input id="ctxUrlInput" placeholder="粘贴 URL 抓取..." onkeydown="if(event.key==='Enter')ctxFetchUrl()">
     <button class="btn btn-primary btn-sm" onclick="ctxFetchUrl()">抓取</button>
   </div>
+  <div class="ctx-search-box">
+    <input id="ctxSearchInput" placeholder="检索缓存内容 (BM25)..."
+      onkeydown="ctxSearchKey(event)" oninput="ctxSearchInputChanged()">
+    <button class="btn btn-ghost btn-sm" onclick="ctxPanelSearch()">🔍</button>
+  </div>
+  <div class="ctx-search-results" id="ctxSearchResults" style="display:none"></div>
   <div class="ctx-actions">
     <button class="btn btn-ghost btn-sm" onclick="ctxUploadFile()">📎 上传</button>
     <button class="btn btn-ghost btn-sm" onclick="ctxClearAll()">🗑 清空</button>
@@ -175,28 +213,57 @@
 <!-- JS 模块（按依赖顺序加载） -->
 <script src="js/env.js" onerror="window.ENV={}"></script>
 <script src="js/debug.js"></script>
+<script src="js/storage.js"></script>
 <script src="js/state.js"></script>
 <script src="js/conversation.js"></script>
 <script src="js/render.js"></script>
+<script src="js/artifacts.js"></script>
 <script src="js/file-parser.js"></script>
 <script src="js/search.js"></script>
 <script src="js/context-buffer.js"></script>
+<script src="js/retrieval.js"></script>
+<script src="js/custom-tools.js"></script>
 <script src="js/agent.js"></script>
 <script src="js/agent-loop.js"></script>
+<script src="js/sandbox-python.js"></script>
+<script src="js/sandbox-js.js"></script>
 <script src="js/agent-commands.js"></script>
 <script src="js/agent-generate.js"></script>
 <script src="js/ui.js"></script>
+<!-- 第四期：循环可视化 / 多模型 / 交互（eta-config.js 必须先于其余第四期模块） -->
+<script src="js/eta-config.js"></script>
+<script src="js/agent-timeline.js"></script>
+<script src="js/multi-model.js"></script>
+<script src="js/voice.js"></script>
+<script src="js/prompt-library.js"></script>
+<script src="js/export-plus.js"></script>
+<script src="js/pwa.js"></script>
+<script src="js/eta-settings.js"></script>
 <script src="js/init.js"></script>
 <script>
 // 启动自检：确保所有关键模块加载成功
 (function selfCheck() {
   const missing = [];
   if (typeof STATE === 'undefined') missing.push('state.js');
+  if (typeof storageLoadChatState === 'undefined') missing.push('storage.js');
   if (typeof sendMessage === 'undefined') missing.push('agent.js');
   if (typeof showModelListModal === 'undefined') missing.push('ui.js');
   if (typeof doWebSearch === 'undefined') missing.push('search.js');
   if (typeof handleStreamResponseAgent === 'undefined') missing.push('agent-loop.js');
   if (typeof renderChat === 'undefined') missing.push('render.js');
+  if (typeof mountArtifacts === 'undefined') missing.push('artifacts.js');
+  if (typeof runPythonCode === 'undefined') missing.push('sandbox-python.js');
+  if (typeof runJsCode === 'undefined') missing.push('sandbox-js.js');
+  if (typeof etaCfg === 'undefined') missing.push('eta-config.js');
+  if (typeof timelineStart === 'undefined') missing.push('agent-timeline.js');
+  if (typeof arenaRun === 'undefined') missing.push('multi-model.js');
+  if (typeof voiceToggleInput === 'undefined') missing.push('voice.js');
+  if (typeof showPromptLibraryModal === 'undefined') missing.push('prompt-library.js');
+  if (typeof showExportModal === 'undefined') missing.push('export-plus.js');
+  if (typeof pwaRegister === 'undefined') missing.push('pwa.js');
+  if (typeof etaSettingsSectionHtml === 'undefined') missing.push('eta-settings.js');
+  if (typeof retrSearch === 'undefined') missing.push('retrieval.js');
+  if (typeof ctGetToolDefinitions === 'undefined') missing.push('custom-tools.js');
   if (missing.length > 0) {
     document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1a2e;color:#fff;font-family:system-ui;padding:40px;text-align:center"><div>'
       + '<h1 style="color:#ff6b6b;margin-bottom:16px">⚠️ 加载失败</h1>'

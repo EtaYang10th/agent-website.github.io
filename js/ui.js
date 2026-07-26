@@ -265,12 +265,20 @@ function showSettingsModal() {
       </div>
     </div>
     <div class="config-row" style="margin-top:12px">
+      <label>${isZh ? '自定义 HTTP 工具' : 'Custom HTTP Tools'}</label>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+        <button class="btn btn-ghost btn-sm" onclick="showCustomToolsModal()">🔧 ${isZh ? '管理工具' : 'Manage tools'}</button>
+        <span style="font-size:.72rem;color:var(--text3)">${(typeof ctGetAll === 'function' ? ctGetAll().filter(x => x.enabled).length : 0)} ${isZh ? '个已启用' : 'enabled'}</span>
+      </div>
+    </div>
+    <div class="config-row" style="margin-top:12px">
       <label>${t('quickActions')}</label>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">
         <button class="btn btn-ghost btn-sm" onclick="clearAllConversations()">${t('clearAll')}</button>
         <button class="btn btn-ghost btn-sm" onclick="exportAllConversations()">${t('exportAll')}</button>
       </div>
     </div>
+    ${(typeof etaSettingsSectionHtml === 'function') ? etaSettingsSectionHtml() : ''}
     <div style="margin-top:16px;font-size:.75rem;color:var(--text3);line-height:1.6">
       <div>${t('shortcutInfo')}</div>
       <div>${t('treeInfo')}</div>
@@ -290,7 +298,12 @@ function clearAllConversations() {
   if (!confirm(STATE.lang === 'zh' ? '确定清空所有对话？此操作不可撤销。' : 'Clear all conversations? This cannot be undone.')) return;
   STATE.conversations = {};
   STATE.activeConvId = null;
-  saveState();
+  if (typeof retrClearAllIndexes === 'function') retrClearAllIndexes();
+  if (typeof storageClearAll === 'function') {
+    storageClearAll().then(() => flushState()).catch(e => console.warn('[Storage] 清空失败:', e));
+  } else {
+    saveState();
+  }
   renderConvList();
   renderChat();
   closeModal();

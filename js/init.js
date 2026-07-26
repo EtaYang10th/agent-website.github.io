@@ -126,11 +126,12 @@ async function probeModelsInBackground(models, cfg) {
 }
 
 // ── 初始化 ──
-(function init() {
+(async function init() {
   loadConfig();
-  loadState();
   applyTheme(STATE.theme);
   applyLang(STATE.lang);
+  // 存储层是异步的，必须等数据到位再渲染，否则会闪出空列表
+  await loadState();
   for (const conv of Object.values(STATE.conversations)) {
     if (!conv.contextBuffer) conv.contextBuffer = [];
   }

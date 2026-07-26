@@ -31,6 +31,56 @@ function renderThinkingBlock(thinking, isActive) {
   </div>`;
 }
 
+/* ── HTML 净化白名单 ──
+   保留：Markdown 基础结构、代码块（pre/code/span + hljs class）、
+   复制按钮（button[data-copy-code]）、KaTeX 产出的 MathML 与 SVG。 */
+const SANITIZE_TAGS = [
+  'p','br','hr','div','span','a','em','strong','del','ins','sub','sup','small','mark','abbr','kbd',
+  'h1','h2','h3','h4','h5','h6','blockquote','ul','ol','li','dl','dt','dd',
+  'pre','code','button','table','thead','tbody','tfoot','tr','th','td','caption','colgroup','col',
+  'img','details','summary','figure','figcaption',
+  // KaTeX MathML
+  'math','semantics','annotation','annotation-xml','mrow','mi','mo','mn','ms','mtext','mspace',
+  'msup','msub','msubsup','mfrac','msqrt','mroot','mover','munder','munderover','mmultiscripts',
+  'mtable','mtr','mtd','mlabeledtr','mpadded','mphantom','menclose','mstyle','merror','mfenced','maction',
+  // KaTeX SVG（\\overrightarrow 等）
+  'svg','path','g','line','rect','circle','ellipse','polyline','polygon','defs','use','symbol','clipPath','text','tspan',
+];
+
+const SANITIZE_ATTRS = [
+  'class','id','style','title','href','target','rel','src','alt','width','height',
+  'align','colspan','rowspan','start','type','open','dir','lang',
+  'data-copy-code','data-lang',
+  // MathML
+  'display','mathvariant','mathsize','mathcolor','displaystyle','scriptlevel','stretchy','fence',
+  'separator','lspace','rspace','accent','accentunder','linethickness','columnalign','rowalign',
+  'columnspacing','rowspacing','notation','encoding','xmlns','depth','voffset',
+  // SVG
+  'd','fill','fill-rule','stroke','stroke-width','stroke-linecap','stroke-linejoin','viewBox',
+  'preserveAspectRatio','x','y','x1','x2','y1','y2','cx','cy','r','rx','ry','points','transform',
+  'aria-hidden','aria-label','role',
+];
+
+// 未加载 DOMPurify（CDN 挂掉）时优雅降级：跳过净化但告警一次
+let _sanitizeWarned = false;
+function sanitizeHtml(html) {
+  if (typeof DOMPurify === 'undefined' || !DOMPurify.sanitize) {
+    if (!_sanitizeWarned) {
+      _sanitizeWarned = true;
+      console.warn('[Security] DOMPurify 未加载，Markdown 渲染跳过净化。请检查 CDN 可达性。');
+    }
+    return html;
+  }
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: SANITIZE_TAGS,
+    ALLOWED_ATTR: SANITIZE_ATTRS,
+    ALLOW_DATA_ATTR: false,
+    ADD_URI_SAFE_ATTR: ['xmlns'],
+    FORBID_TAGS: ['script','style','iframe','object','embed','form','input','textarea','select','link','meta','base'],
+    FORBID_ATTR: ['onerror','onload','onclick','onmouseover','onfocus','onanimationstart','formaction'],
+  });
+}
+
 // ── 渲染 Markdown ──
 function renderMd(text) {
   if (!text) return '';
@@ -54,7 +104,8 @@ function renderMd(text) {
   });
 
   let html = marked.parse(text);
-  html = html.replace(/<pre><code/g, '<pre><button class="copy-btn" onclick="copyCode(this)">复制</button><code');
+  // 不用内联 onclick：DOMPurify 会剥离事件属性，改由文件末尾的 document 事件委托处理
+  html = html.replace(/<pre><code/g, '<pre><button type="button" class="copy-btn" data-copy-code="1">复制</button><code');
 
   html = html.replace(/%%BLOCKMATH(\d+)%%/g, (_, i) => {
     try { return katex.renderToString(blockMath[i], { displayMode: true, throwOnError: false }); }
@@ -64,16 +115,26 @@ function renderMd(text) {
     try { return katex.renderToString(inlineMath[i], { displayMode: false, throwOnError: false }); }
     catch(e) { return `<code>${escHtml(inlineMath[i])}</code>`; }
   });
-  return html;
+  // sanitize 必须在 KaTeX 回填之后，否则 MathML/SVG 会重新引入未净化节点
+  html = sanitizeHtml(html);
+  // 给可预览代码块的 <pre> 打标记（净化之后打，避免被 DOMPurify 处理掉）；工具条由 mountArtifacts 挂载
+  return (typeof markArtifactBlocks === 'function') ? markArtifactBlocks(html) : html;
 }
 
 function copyCode(btn) {
   const code = btn.nextElementSibling;
+  if (!code) return;
   navigator.clipboard.writeText(code.textContent).then(() => {
     btn.textContent = '已复制';
     setTimeout(() => btn.textContent = '复制', 1500);
   });
 }
+
+// ── 复制按钮事件委托（替代内联 onclick，兼容 DOMPurify） ──
+document.addEventListener('click', e => {
+  const btn = e.target.closest && e.target.closest('button.copy-btn[data-copy-code]');
+  if (btn) { e.preventDefault(); copyCode(btn); }
+});
 
 // ── 渲染聊天区域 ──
 function renderChat() {
@@ -115,6 +176,9 @@ function renderChat() {
   }
   const tokenInfo = outTokens > 0 ? ` · ${outTokens.toLocaleString()} 输出tokens` : '';
   $('topbarInfo').textContent = `${conv.title} · ${msgCount} 条消息${tokenInfo}`;
+
+  if (typeof reattachCodeResultCards === 'function') reattachCodeResultCards();
+  if (typeof mountArtifacts === 'function') mountArtifacts(container);
 
   requestAnimationFrame(() => {
     $('chatArea').scrollTop = $('chatArea').scrollHeight;

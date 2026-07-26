@@ -30,7 +30,14 @@ function switchConversation(id) {
 }
 
 function deleteConversation(id) {
+  const doomed = STATE.conversations[id];
   delete STATE.conversations[id];
+  // 清理该对话的大字段记录，否则图片会永久占用 IndexedDB
+  if (doomed && typeof storageDeleteConvBlobs === 'function') {
+    storageDeleteConvBlobs(id, doomed).catch(e => console.warn('[Storage] blob 清理失败:', e));
+  }
+  // 同步清理该对话的检索索引，否则 IndexedDB 里会留下孤儿索引（js/retrieval.js）
+  if (typeof retrClearConv === 'function') retrClearConv(id);
   if (STATE.activeConvId === id) {
     const ids = Object.keys(STATE.conversations);
     STATE.activeConvId = ids.length ? ids[ids.length - 1] : null;

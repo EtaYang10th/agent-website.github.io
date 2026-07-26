@@ -55,22 +55,67 @@ function toast(msg, type = 'info') {
   setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 3000);
 }
 
-// ── LocalStorage 持久化 ──
+/* ── 对话数据持久化（IndexedDB，见 js/storage.js） ──
+   saveState() 保持同步签名不变（全项目 20+ 处同步调用），
+   内部 debounce 600ms 后异步落盘；需要立即写入时用 flushState()。 */
+const SAVE_DEBOUNCE_MS = 600;
+let _saveTimer = null;
+let _savePending = false;
+let _saveInFlight = null;
+let _saveErrorNotified = false;
+
 function saveState() {
-  try {
-    const data = { conversations: STATE.conversations, activeConvId: STATE.activeConvId };
-    localStorage.setItem('ai-chat-studio', JSON.stringify(data));
-  } catch(e) { /* quota exceeded, ignore */ }
+  _savePending = true;
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => { _saveTimer = null; _doSaveState(); }, SAVE_DEBOUNCE_MS);
 }
-function loadState() {
-  try {
-    const raw = localStorage.getItem('ai-chat-studio');
-    if (!raw) return;
-    const data = JSON.parse(raw);
-    if (data.conversations) STATE.conversations = data.conversations;
-    if (data.activeConvId) STATE.activeConvId = data.activeConvId;
-  } catch(e) { /* corrupt, ignore */ }
+
+async function _doSaveState() {
+  if (_saveInFlight) return _saveInFlight.then(() => { if (_savePending) return _doSaveState(); });
+  if (!_savePending) return;
+  _savePending = false;
+  _saveInFlight = storageSaveChatState(STATE.conversations, STATE.activeConvId)
+    .then(() => { _saveErrorNotified = false; })
+    .catch(e => {
+      console.error('[State] 保存失败:', e);
+      // 不再静默：写不进去意味着用户会丢数据，必须告知
+      if (!_saveErrorNotified) {
+        _saveErrorNotified = true;
+        const isQuota = /quota|exceed/i.test(e && (e.name + ' ' + e.message));
+        toast(STATE.lang === 'en'
+          ? ('Save failed: ' + (isQuota ? 'storage quota exceeded, please delete old chats' : (e.message || e.name)))
+          : ('保存失败：' + (isQuota ? '存储空间已满，请删除旧对话' : (e.message || e.name))), 'fail');
+      }
+    })
+    .finally(() => { _saveInFlight = null; });
+  return _saveInFlight;
 }
+
+// 立即落盘（beforeunload / visibilitychange / 关键操作后调用）
+function flushState() {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  _savePending = true;
+  return _doSaveState();
+}
+
+async function loadState() {
+  try {
+    const r = await storageLoadChatState();
+    STATE.conversations = r.conversations || {};
+    STATE.activeConvId = r.activeConvId || null;
+    if (r.migrated) toast(STATE.lang === 'en' ? 'Chat data migrated to IndexedDB' : '对话数据已迁移到 IndexedDB', 'ok');
+    return r;
+  } catch (e) {
+    console.error('[State] 加载失败:', e);
+    toast(STATE.lang === 'en' ? 'Failed to load chat data' : '对话数据加载失败', 'fail');
+    return { conversations: {}, activeConvId: null };
+  }
+}
+
+window.addEventListener('beforeunload', () => { if (_savePending || _saveTimer) flushState(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && (_savePending || _saveTimer)) flushState();
+});
 function saveConfig() {
   try {
     localStorage.setItem('ai-chat-cfg', JSON.stringify({
@@ -78,6 +123,7 @@ function saveConfig() {
       system: $('cfgSystem').value, temp: $('cfgTemp').value, maxTok: $('cfgMaxTok').value,
       model: $('modelSelect').value,
       searchEnabled: $('cfgSearchEnabled').checked,
+      codeEnabled: $('cfgCodeEnabled') ? $('cfgCodeEnabled').checked : false,
       searchMode: STATE.searchMode,
       toolChoice: STATE.toolChoice,
       serpApiKey: $('cfgSerpApiKey').value,
@@ -89,6 +135,7 @@ function saveConfig() {
 }
 function loadConfig() {
   const env = window.ENV || {};
+  let needResave = false;
   try {
     const raw = localStorage.getItem('ai-chat-cfg');
     const c = raw ? JSON.parse(raw) : {};
@@ -97,7 +144,17 @@ function loadConfig() {
     $('cfgApiKey').value = c.apiKey || env.API_KEY || '';
     if (c.system) $('cfgSystem').value = c.system;
     if (c.temp) $('cfgTemp').value = c.temp;
-    if (c.maxTok) $('cfgMaxTok').value = c.maxTok;
+    if (c.maxTok) {
+      // 一次性纠正历史遗留的超大 max_tokens（旧默认 200000 会让多数模型返回 400）
+      const mt = parseInt(c.maxTok, 10);
+      if (Number.isFinite(mt) && mt > 32768) {
+        $('cfgMaxTok').value = 8192;
+        c.maxTok = 8192;
+        needResave = true;
+      } else {
+        $('cfgMaxTok').value = c.maxTok;
+      }
+    }
     if (c.model) {
       const sel = $('modelSelect');
       // 确保 option 存在再设值（模型列表可能还没拉取到）
@@ -107,8 +164,12 @@ function loadConfig() {
       sel.value = c.model;
     }
     if (c.searchEnabled !== undefined) $('cfgSearchEnabled').checked = c.searchEnabled;
+    // 代码执行默认关闭（首次调用要下载约 10MB Pyodide），只在用户明确开过时恢复
+    if (c.codeEnabled !== undefined && $('cfgCodeEnabled')) $('cfgCodeEnabled').checked = !!c.codeEnabled;
     if (c.searchMode !== undefined) STATE.searchMode = c.searchMode;
-    if (c.toolChoice !== undefined) STATE.toolChoice = c.toolChoice;
+    if (c.toolChoice !== undefined && ['auto', 'required', 'none'].includes(c.toolChoice)) {
+      STATE.toolChoice = c.toolChoice;
+    }
     if ($('cfgToolChoice')) $('cfgToolChoice').value = STATE.toolChoice || 'auto';
     $('cfgSerpApiKey').value = c.serpApiKey || env.SERP_API_KEY || '';
     $('cfgBraveKey').value = c.braveKey || env.BRAVE_SEARCH_KEY || '';
@@ -117,6 +178,7 @@ function loadConfig() {
     applyTheme(STATE.theme);
     applyLang(STATE.lang);
   } catch(e) {}
+  if (needResave) { saveConfig(); }
 }
 
 // ── 主题切换 ──
@@ -146,8 +208,11 @@ const I18N = {
   zh: {
     newConv: '新对话', convList: '对话列表', baseUrl: 'Base URL', apiKey: 'API Key',
     systemPrompt: 'System Prompt', temperature: 'Temperature', maxTokens: 'Max Tokens',
+    maxTokHint: '单次<b>输出</b>上限（发给 API 的 max_tokens），不是上下文窗口。多数模型上限 4k–32k，填过大会返回 400。',
     serpApiKey: 'SerpAPI Key', braveKey: 'Brave Search Key',
     enableSearch: '启用 Agent 联网能力（搜索+抓取网页）',
+    enableCode: '启用 Agent 代码执行（Python / JS 本地沙箱）',
+    codeHint: '开启后模型可在<b>你的浏览器里执行代码</b>。Python 跑在 Pyodide WASM 沙箱内，无法访问本机文件系统，只能读取你显式放入缓存区的文件；JS 跑在 Web Worker 里。首次调用需下载约 10MB 运行时。',
     toolChoiceLabel: '工具调用策略',
     modelList: '📋 模型列表', balance: '💰 余额',
     ctxBuffer: '📚 对话缓存区', debugLog: '🐛 调试日志',
@@ -168,12 +233,19 @@ const I18N = {
     shortcutInfo: '⌨️ 快捷键: Ctrl+Enter 发送 · 拖拽/粘贴上传图片',
     treeInfo: '🌳 对话树: 点击消息的编辑按钮可创建分支，用 ◀▶ 切换分支',
     modelSwitchInfo: '🔄 模型切换: 随时在顶栏切换模型，不同消息可用不同模型',
+    gsPlaceholder: '🔍 搜索所有对话...',
+    arenaTitle: '模型竞技场（多模型并排对比）',
+    promptLibTitle: 'Prompt 模板库',
+    micTitle: '语音输入',
   },
   en: {
     newConv: 'New Chat', convList: 'Conversations', baseUrl: 'Base URL', apiKey: 'API Key',
     systemPrompt: 'System Prompt', temperature: 'Temperature', maxTokens: 'Max Tokens',
+    maxTokHint: 'Per-request <b>output</b> limit (the API max_tokens), not the context window. Most models cap at 4k–32k; too large returns 400.',
     serpApiKey: 'SerpAPI Key', braveKey: 'Brave Search Key',
     enableSearch: 'Enable Agent web access (search + scrape)',
+    enableCode: 'Enable Agent code execution (Python / JS local sandbox)',
+    codeHint: 'Once enabled, the model can <b>run code inside your browser</b>. Python runs in the Pyodide WASM sandbox with no access to your local filesystem — only files you explicitly put in the knowledge buffer; JS runs in a Web Worker. First call downloads about 10MB of runtime.',
     toolChoiceLabel: 'Tool call policy',
     modelList: '📋 Models', balance: '💰 Balance',
     ctxBuffer: '📚 Context Buffer', debugLog: '🐛 Debug Log',
@@ -194,6 +266,10 @@ const I18N = {
     shortcutInfo: '⌨️ Shortcuts: Ctrl+Enter to send · Drag/paste to upload images',
     treeInfo: '🌳 Tree: Click edit on messages to branch, use ◀▶ to switch',
     modelSwitchInfo: '🔄 Models: Switch models anytime in the top bar',
+    gsPlaceholder: '🔍 Search all conversations...',
+    arenaTitle: 'Model Arena (compare models side by side)',
+    promptLibTitle: 'Prompt Library',
+    micTitle: 'Voice input',
   },
 };
 
@@ -220,13 +296,25 @@ function applyI18n() {
   // Search toggle label
   const searchLabel = document.querySelector('#cfgSearchEnabled + label');
   if (searchLabel) searchLabel.textContent = t('enableSearch');
+  const codeLabel = $('codeEnabledLabel');
+  if (codeLabel) codeLabel.textContent = t('enableCode');
+  const codeHint = $('codeEnabledHint');
+  if (codeHint) codeHint.innerHTML = t('codeHint');
   const toolChoiceLbl = $('toolChoiceLabel');
   if (toolChoiceLbl) toolChoiceLbl.textContent = t('toolChoiceLabel');
+  // 按 value 覆盖三个选项文案，避免下标错位
   const tcSel = $('cfgToolChoice');
-  if (tcSel && tcSel.options.length >= 2) {
-    tcSel.options[0].textContent = STATE.lang === 'zh' ? '自动（模型自行决定是否调用）' : 'Auto (model decides)';
-    tcSel.options[1].textContent = STATE.lang === 'zh' ? '禁用工具（仅用已有知识回答）' : 'Disabled (use existing knowledge only)';
+  if (tcSel) {
+    const isZh = STATE.lang === 'zh';
+    const TC_TEXT = {
+      auto: isZh ? '自动（模型自行决定是否调用）' : 'Auto (model decides)',
+      required: isZh ? '强制调用（至少调用一次工具）' : 'Required (force at least one tool call)',
+      none: isZh ? '禁用工具（仅用已有知识回答）' : 'Disabled (use existing knowledge only)',
+    };
+    for (const opt of tcSel.options) if (TC_TEXT[opt.value]) opt.textContent = TC_TEXT[opt.value];
   }
+  const maxTokHint = $('maxTokHint');
+  if (maxTokHint) maxTokHint.innerHTML = t('maxTokHint');
 
   // Topbar
   const modelLabel = document.querySelector('.topbar-model span');
@@ -237,7 +325,9 @@ function applyI18n() {
   // Topbar action buttons
   const ctxBtn = $('ctxToggleBtn'); if (ctxBtn) ctxBtn.title = t('ctxBuffer');
   const debugBtn = $('debugToggleBtn'); if (debugBtn) debugBtn.title = t('debugLog');
-  const exportBtn = document.querySelector('.topbar-actions .icon-btn[onclick="exportConversation()"]');
+  // 第四期把导出按钮换成了导出菜单（id=exportBtn），保留旧选择器做兼容
+  const exportBtn = $('exportBtn')
+    || document.querySelector('.topbar-actions .icon-btn[onclick="exportConversation()"]');
   if (exportBtn) exportBtn.title = t('exportConv');
   const settingsBtn = document.querySelector('.topbar-actions .icon-btn[onclick="showSettingsModal()"]');
   if (settingsBtn) settingsBtn.title = t('settings');
@@ -276,4 +366,11 @@ function applyI18n() {
   const sidebarBtns = document.querySelectorAll('.config-panel .btn-ghost');
   if (sidebarBtns[0]) sidebarBtns[0].innerHTML = t('modelList');
   if (sidebarBtns[1]) sidebarBtns[1].innerHTML = t('balance');
+
+  // 第四期新增控件
+  const gsInput = $('gsInput'); if (gsInput) gsInput.placeholder = t('gsPlaceholder');
+  const arenaBtn = $('arenaBtn'); if (arenaBtn) arenaBtn.title = t('arenaTitle');
+  const plBtn = $('promptLibBtn'); if (plBtn) plBtn.title = t('promptLibTitle');
+  const micBtn = $('micBtn'); if (micBtn && typeof voiceSyncMicBtn === 'function') voiceSyncMicBtn();
+  else if (micBtn) micBtn.title = t('micTitle');
 }

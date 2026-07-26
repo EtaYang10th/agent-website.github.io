@@ -28,10 +28,13 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
   const searchEnabled = STATE.searchMode && $('cfgSearchEnabled').checked;
   let rafPending = false;
   let thinkingContent = '';
-  const isThinkingModel = /thinking|think/i.test(getConfig().model);
+  // 用消息节点上记录的模型（Planner/Executor 分工时它才是真正发请求的那个）
+  const streamModel = (conv.tree[aiMsgId] && conv.tree[aiMsgId].model) || getConfig().model;
+  const isThinkingModel = /thinking|think/i.test(streamModel);
   let inThinkTag = false;
   let rawContentBuf = '';
-  const READ_TIMEOUT = 90000;
+  // 流式读取超时从第四期配置读取（js/eta-config.js），模块缺失时回退 90s
+  const READ_TIMEOUT = (typeof etaCfg === 'function') ? etaCfg('readTimeout') : 90000;
   const toolCallsAcc = []; // 按 index 累积的 tool_calls（arguments 为分片拼接的 JSON 字符串）
   let finishReason = null;
 
@@ -45,7 +48,7 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
       ({ done, value } = await Promise.race([readPromise, timeoutPromise]));
     } catch (readErr) {
       if (readErr.message === 'stream_read_timeout') {
-        console.warn('Stream read timeout — 90s 无数据，中断流');
+        console.warn(`Stream read timeout — ${Math.round(READ_TIMEOUT / 1000)}s 无数据，中断流`);
         newContent += '\n\n⚠️ [流式响应超时，服务端长时间无数据返回]';
         conv.tree[aiMsgId].content += '\n\n⚠️ [流式响应超时，服务端长时间无数据返回]';
         try { reader.cancel(); } catch(_) {}

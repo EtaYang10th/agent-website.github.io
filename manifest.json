@@ -1,0 +1,26 @@
+{
+  "name": "ETA — Edge Thin Agent",
+  "short_name": "ETA",
+  "description": "纯前端 Agent 客户端：多轮对话、网页搜索、代码沙箱、知识库检索，全部跑在浏览器里。",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0a0f",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "maskable"
+    }
+  ]
+}

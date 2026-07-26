@@ -35,6 +35,7 @@ function toggleCtxPanel() {
   if (panel.classList.contains('open')) {
     btn.style.color = 'var(--accent2)';
     renderCtxBuffer();
+    if (typeof retrLocalizePanel === 'function') retrLocalizePanel();
   } else {
     btn.style.color = '';
   }
@@ -59,6 +60,8 @@ function ctxAddItem(item) {
   renderCtxBuffer();
   toast(`已添加到缓存区: ${entry.name}`, 'ok');
   updateCtxBtnBadge();
+  // 异步建分块索引，不阻塞 UI（js/retrieval.js）
+  if (typeof retrScheduleIndex === 'function') retrScheduleIndex();
   return entry;
 }
 
@@ -69,6 +72,7 @@ function ctxRemoveItem(id) {
   saveState();
   renderCtxBuffer();
   updateCtxBtnBadge();
+  if (typeof retrRemoveItem === 'function') retrRemoveItem(id, conv.id);
 }
 
 function ctxClearAll() {
@@ -80,6 +84,7 @@ function ctxClearAll() {
   saveState();
   renderCtxBuffer();
   updateCtxBtnBadge();
+  if (conv && typeof retrClearConv === 'function') retrClearConv(conv.id);
   toast('缓存区已清空', 'ok');
 }
 
@@ -109,6 +114,8 @@ function updateCtxBtnBadge() {
 function renderCtxBuffer() {
   const list = $('ctxList');
   if (!list) return;
+  // 切换对话后旧的检索结果不再适用，丢掉（js/retrieval.js）
+  if (typeof retrDropStaleResults === 'function') retrDropStaleResults();
   const conv = getActiveConv();
   const buf = conv ? (conv.contextBuffer || []) : [];
   if (!buf.length) {
@@ -253,6 +260,7 @@ function ctxAutoSaveSearch(results, query, type) {
     tokens: estimateTokens(content), addedAt: Date.now(), selected: false,
   });
   saveState(); renderCtxBuffer(); updateCtxBtnBadge();
+  if (typeof retrScheduleIndex === 'function') retrScheduleIndex();
 }
 
 function ctxAutoSaveFetch(url, content) {
@@ -266,6 +274,7 @@ function ctxAutoSaveFetch(url, content) {
     tokens: estimateTokens(content), addedAt: Date.now(), selected: false,
   });
   saveState(); renderCtxBuffer(); updateCtxBtnBadge();
+  if (typeof retrScheduleIndex === 'function') retrScheduleIndex();
 }
 
 // ── 构建注入内容 ──
@@ -273,12 +282,16 @@ function buildContextBufferPrompt() {
   const buf = getCtxBuffer();
   if (!buf.length) return '';
   const icon = {webpage:'🌐',paper:'📄',file:'📎',search:'🔍',text:'📝'};
-  let prompt = '\n\n[知识库索引] 以下是你的缓存资料列表（仅标题）。如需查看某条的完整内容，请调用 ctx_read 工具并传入对应的 id；不再需要的条目可用 ctx_delete 工具删除：\n';
+  let prompt = '\n\n[知识库索引] 以下是你的缓存资料清单（仅标题与体积，正文未注入）。'
+    + '检索方式：先用 ctx_search(query, top_k) 跨全部条目做关键词检索，拿到命中片段、来源 ID 与字符位置；'
+    + '需要更多上下文时用 ctx_read(id, offset, length) 从该位置分页续读（每页上限 15000 字符，返回值会给出下一段 offset）。'
+    + '不再需要的条目用 ctx_delete 删除。\n';
   for (const item of buf) {
     const ic = icon[item.type] || '📄';
-    const tokStr = item.tokens ? ` (~${item.tokens.toLocaleString()} tok)` : '';
-    prompt += `  ID=${item.id} ${ic} ${item.name}${tokStr}\n`;
+    const tokStr = item.tokens ? ` (~${item.tokens.toLocaleString()} tok` : '';
+    const lenStr = tokStr ? `${tokStr}, ${(item.content || '').length} 字符)` : '';
+    prompt += `  ID=${item.id} ${ic} ${item.name}${lenStr}\n`;
   }
-  prompt += `共 ${buf.length} 条缓存。请先看标题，按需用 ctx_read 读取，不要一次性全部读取。\n[/知识库索引]\n`;
+  prompt += `共 ${buf.length} 条缓存。不要凭标题猜内容，也不要一次性读全文：先 ctx_search 定位，再按需 ctx_read 分页精读。\n[/知识库索引]\n`;
   return prompt;
 }
