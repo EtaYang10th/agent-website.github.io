@@ -3,6 +3,7 @@
    ------------------------------------------------------------
    GitHub Pages 项目页部署在 /<repo>/ 子路径下，因此 sw 的注册路径与
    scope 都由当前页面 URL 推导（相对路径），不写死 '/'。
+   注意 sw.js 位于站点根目录而非 js/ 下，原因见 pwaRegister 内注释。
    file:// 打开时 service worker 不可用，静默跳过。
    ============================================================ */
 
@@ -23,7 +24,9 @@ async function pwaRegister() {
   }
   const base = pwaBaseDir();
   try {
-    _pwaReg = await navigator.serviceWorker.register(base + 'js/sw.js', { scope: base });
+    // sw.js 必须放在站点根目录：service worker 的 scope 不能超出脚本自身所在目录，
+    // 放在 js/ 下只能控制 /js/*，而 GitHub Pages 无法设置 Service-Worker-Allowed 头来放宽。
+    _pwaReg = await navigator.serviceWorker.register(base + 'sw.js', { scope: base });
     console.log('[PWA] service worker 已注册, scope:', _pwaReg.scope);
     return _pwaReg;
   } catch (e) {
