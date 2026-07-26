@@ -116,6 +116,23 @@ window.addEventListener('beforeunload', () => { if (_savePending || _saveTimer) 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden' && (_savePending || _saveTimer)) flushState();
 });
+/* ── 侧栏配置面板折叠状态 ──
+   四个 <details> 分组的展开状态存进 'ai-chat-cfg' 的 groups 字段（跟随 config 现状，
+   不引入新的存储位置）。未配置 API 时强制展开「API 连接」，保证首次配置浮层能用。 */
+const CFG_GROUP_IDS = ['grpApi', 'grpModel', 'grpAgent', 'grpSearch'];
+const CFG_GROUP_DEFAULTS = { grpApi: true, grpModel: false, grpAgent: false, grpSearch: false };
+
+/* 落盘的是"用户偏好"而不是当前 DOM 状态。两者会短暂不一致：未配置 API 时我们强制
+   展开「API 连接」，但这属于引导行为，不该覆盖用户自己收起过的偏好。
+   另外 <details> 的 toggle 事件是异步派发的，同步的 mute 标志盖不住，所以
+   cfgApplyGroups 里的批量赋值靠 _cfgGroupsMuted + 一次 setTimeout 归零来兜住。 */
+let _cfgGroupPrefs = Object.assign({}, CFG_GROUP_DEFAULTS);
+let _cfgGroupsMuted = false;
+
+function cfgGroupState() {
+  return Object.assign({}, _cfgGroupPrefs);
+}
+
 function saveConfig() {
   try {
     localStorage.setItem('ai-chat-cfg', JSON.stringify({
@@ -130,9 +147,55 @@ function saveConfig() {
       braveKey: $('cfgBraveKey').value,
       theme: STATE.theme,
       lang: STATE.lang,
+      groups: cfgGroupState(),
     }));
   } catch(e) {}
+  cfgSyncGroupBadges();
 }
+
+// <details> 的 ontoggle 回调：把用户的展开/折叠动作记进偏好并落盘
+function cfgGroupToggled(ev) {
+  if (_cfgGroupsMuted) return;
+  const el = ev && ev.target;
+  if (el && CFG_GROUP_IDS.includes(el.id)) {
+    _cfgGroupPrefs[el.id] = !!el.open;
+  } else {
+    // 没拿到事件对象时退化为全量同步，保证偏好不会与界面脱节
+    for (const id of CFG_GROUP_IDS) {
+      const g = $(id);
+      if (g) _cfgGroupPrefs[id] = !!g.open;
+    }
+  }
+  saveConfig();
+}
+
+/* 分组标题右侧的状态徽标：折叠后用户仍能一眼看出该组是否已配置/已开启。
+   不改任何配置值，只读 DOM。 */
+function cfgSyncGroupBadges() {
+  const isZh = STATE.lang !== 'en';
+  const set = (id, text, on) => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('on', !!on);
+  };
+  const has = id => !!($(id) && $(id).value.trim());
+  const apiOk = has('cfgBaseUrl') && has('cfgApiKey');
+  set('grpApiBadge', apiOk ? (isZh ? '已配置' : 'set') : (isZh ? '未配置' : 'not set'), apiOk);
+
+  const tp = $('cfgTemp'), mt = $('cfgMaxTok');
+  const modelBadge = (tp && mt) ? ('T ' + (tp.value || '-') + ' · ' + (mt.value || '-')) : '';
+  set('grpModelBadge', modelBadge, false);
+
+  const caps = [];
+  if ($('cfgSearchEnabled') && $('cfgSearchEnabled').checked) caps.push('🔍');
+  if ($('cfgCodeEnabled') && $('cfgCodeEnabled').checked) caps.push('⚙');
+  set('grpAgentBadge', caps.length ? caps.join(' ') : (isZh ? '关' : 'off'), caps.length > 0);
+
+  const keys = (has('cfgSerpApiKey') ? 1 : 0) + (has('cfgBraveKey') ? 1 : 0);
+  set('grpSearchBadge', keys ? keys + (isZh ? ' 个 Key' : ' key' + (keys > 1 ? 's' : '')) : (isZh ? '无 Key' : 'no key'), keys > 0);
+}
+
 function loadConfig() {
   const env = window.ENV || {};
   let needResave = false;
@@ -175,10 +238,52 @@ function loadConfig() {
     $('cfgBraveKey').value = c.braveKey || env.BRAVE_SEARCH_KEY || '';
     if (c.theme) STATE.theme = c.theme;
     if (c.lang) STATE.lang = c.lang;
+    cfgApplyGroups(c.groups);
     applyTheme(STATE.theme);
     applyLang(STATE.lang);
   } catch(e) {}
   if (needResave) { saveConfig(); }
+}
+
+/* 恢复折叠状态。没有存档时用默认值；无论存档怎么写，只要 Base URL / API Key
+   还是空的就强制展开「API 连接」——否则首次使用的人看不到该填哪里。 */
+function cfgApplyGroups(saved) {
+  const s = (saved && typeof saved === 'object') ? saved : {};
+  for (const id of CFG_GROUP_IDS) {
+    _cfgGroupPrefs[id] = (s[id] !== undefined) ? !!s[id] : CFG_GROUP_DEFAULTS[id];
+  }
+  const base = $('cfgBaseUrl'), key = $('cfgApiKey');
+  const configured = !!(base && base.value.trim() && key && key.value.trim());
+  _cfgGroupsMuted = true;
+  for (const id of CFG_GROUP_IDS) {
+    const el = $(id);
+    if (!el) continue;
+    // 未配置 API 时强制展开该组（不写入偏好），否则首次使用的人看不到该填哪里
+    el.open = (id === 'grpApi' && !configured) ? true : _cfgGroupPrefs[id];
+  }
+  // toggle 事件异步派发，等本轮任务队列清空后再放开监听
+  setTimeout(() => { _cfgGroupsMuted = false; }, 0);
+  cfgSyncGroupBadges();
+}
+
+/* ── ⓘ 详情展开 ──
+   长说明不再常驻版面，但绝不删除：一句话要点留在界面上，完整说明（含代码执行的
+   安全边界）放在这里，点 ⓘ 展开、悬浮看 title，两条路径都能拿到全文。 */
+// 供外部调用：程序化改写某个分组里的字段时把它展开，避免值悄悄变了用户看不见
+function cfgOpenGroup(id) {
+  const el = $(id);
+  if (!el || el.open) return;
+  el.open = true;
+  if (CFG_GROUP_IDS.includes(id)) _cfgGroupPrefs[id] = true;
+  saveConfig();
+}
+
+function cfgToggleInfo(detailId, btn) {
+  const box = $(detailId);
+  if (!box) return;
+  const show = box.hidden;
+  box.hidden = !show;
+  if (btn) btn.setAttribute('aria-expanded', show ? 'true' : 'false');
 }
 
 // ── 主题切换 ──
@@ -208,11 +313,15 @@ const I18N = {
   zh: {
     newConv: '新对话', convList: '对话列表', baseUrl: 'Base URL', apiKey: 'API Key',
     systemPrompt: 'System Prompt', temperature: 'Temperature', maxTokens: 'Max Tokens',
-    maxTokHint: '单次<b>输出</b>上限（发给 API 的 max_tokens），不是上下文窗口。多数模型上限 4k–32k，填过大会返回 400。',
+    maxTokHint: '仅限单次<b>输出</b>长度，非上下文窗口。',
+    maxTokDetail: '这是发给 API 的 max_tokens，只约束模型一次回复能写多长，与上下文窗口无关。多数模型上限在 4k–32k，填过大服务端会直接返回 400。',
     serpApiKey: 'SerpAPI Key', braveKey: 'Brave Search Key',
     enableSearch: '启用 Agent 联网能力（搜索+抓取网页）',
     enableCode: '启用 Agent 代码执行（Python / JS 本地沙箱）',
-    codeHint: '开启后模型可在<b>你的浏览器里执行代码</b>。Python 跑在 Pyodide WASM 沙箱内，无法访问本机文件系统，只能读取你显式放入缓存区的文件；JS 跑在 Web Worker 里。首次调用需下载约 10MB 运行时。',
+    codeHint: '代码在<b>你的浏览器沙箱</b>内运行，首次约 10MB。',
+    codeDetail: '⚠ 安全说明：开启后模型可在你的浏览器里执行代码。Python 跑在 Pyodide WASM 沙箱内，无法访问本机文件系统，只能读取你显式放入缓存区的文件；JS 跑在 Web Worker 里，同样与页面隔离。代码不会上传到服务器。首次调用需下载约 10MB 运行时。',
+    infoMore: '查看完整说明',
+    groupApi: 'API 连接', groupModel: '模型参数', groupAgent: 'Agent 能力', groupSearch: '搜索服务',
     toolChoiceLabel: '工具调用策略',
     modelList: '📋 模型列表', balance: '💰 余额',
     ctxBuffer: '📚 对话缓存区', debugLog: '🐛 调试日志',
@@ -241,11 +350,15 @@ const I18N = {
   en: {
     newConv: 'New Chat', convList: 'Conversations', baseUrl: 'Base URL', apiKey: 'API Key',
     systemPrompt: 'System Prompt', temperature: 'Temperature', maxTokens: 'Max Tokens',
-    maxTokHint: 'Per-request <b>output</b> limit (the API max_tokens), not the context window. Most models cap at 4k–32k; too large returns 400.',
+    maxTokHint: 'Caps one <b>reply</b>, not the context window.',
+    maxTokDetail: 'This is the API max_tokens: it only limits how long a single reply can be, and has nothing to do with the context window. Most models cap at 4k–32k; a value that is too large makes the server return 400.',
     serpApiKey: 'SerpAPI Key', braveKey: 'Brave Search Key',
     enableSearch: 'Enable Agent web access (search + scrape)',
     enableCode: 'Enable Agent code execution (Python / JS local sandbox)',
-    codeHint: 'Once enabled, the model can <b>run code inside your browser</b>. Python runs in the Pyodide WASM sandbox with no access to your local filesystem — only files you explicitly put in the knowledge buffer; JS runs in a Web Worker. First call downloads about 10MB of runtime.',
+    codeHint: 'Code runs in <b>your browser sandbox</b>; ~10MB on first use.',
+    codeDetail: '⚠ Security note: once enabled, the model can run code inside your browser. Python runs in the Pyodide WASM sandbox with no access to your local filesystem — only files you explicitly put in the context buffer; JS runs in a Web Worker, also isolated from the page. Code is never uploaded to a server. The first call downloads about 10MB of runtime.',
+    infoMore: 'Show full details',
+    groupApi: 'API Connection', groupModel: 'Model Parameters', groupAgent: 'Agent Capabilities', groupSearch: 'Search Services',
     toolChoiceLabel: 'Tool call policy',
     modelList: '📋 Models', balance: '💰 Balance',
     ctxBuffer: '📚 Context Buffer', debugLog: '🐛 Debug Log',
@@ -300,6 +413,10 @@ function applyI18n() {
   if (codeLabel) codeLabel.textContent = t('enableCode');
   const codeHint = $('codeEnabledHint');
   if (codeHint) codeHint.innerHTML = t('codeHint');
+  const codeDetail = $('codeEnabledDetail');
+  if (codeDetail) codeDetail.innerHTML = t('codeDetail');
+  const codeInfoBtn = $('codeInfoBtn');
+  if (codeInfoBtn) { codeInfoBtn.title = t('codeDetail').replace(/<[^>]+>/g, ''); codeInfoBtn.setAttribute('aria-label', t('infoMore')); }
   const toolChoiceLbl = $('toolChoiceLabel');
   if (toolChoiceLbl) toolChoiceLbl.textContent = t('toolChoiceLabel');
   // 按 value 覆盖三个选项文案，避免下标错位
@@ -315,6 +432,18 @@ function applyI18n() {
   }
   const maxTokHint = $('maxTokHint');
   if (maxTokHint) maxTokHint.innerHTML = t('maxTokHint');
+  const maxTokDetail = $('maxTokDetail');
+  if (maxTokDetail) maxTokDetail.innerHTML = t('maxTokDetail');
+  const maxTokInfoBtn = $('maxTokInfoBtn');
+  if (maxTokInfoBtn) { maxTokInfoBtn.title = t('maxTokDetail').replace(/<[^>]+>/g, ''); maxTokInfoBtn.setAttribute('aria-label', t('infoMore')); }
+
+  // 侧栏配置分组标题（追加，不影响上面已有的 label 赋值）
+  const GROUP_KEYS = { grpApiTitle: 'groupApi', grpModelTitle: 'groupModel', grpAgentTitle: 'groupAgent', grpSearchTitle: 'groupSearch' };
+  for (const [id, key] of Object.entries(GROUP_KEYS)) {
+    const el = $(id);
+    if (el) el.textContent = t(key);
+  }
+  if (typeof cfgSyncGroupBadges === 'function') cfgSyncGroupBadges();
 
   // Topbar
   const modelLabel = document.querySelector('.topbar-model span');

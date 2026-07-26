@@ -65,7 +65,12 @@ function plApply(id) {
   const isZh = STATE.lang !== 'en';
   if (t.role === 'system') {
     const box = $('cfgSystem');
-    if (box) { box.value = t.text; saveConfig(); }
+    if (box) {
+      box.value = t.text;
+      saveConfig();
+      // 侧栏「模型参数」可能是折叠的，展开一下让用户看到 System Prompt 真的被换了
+      if (typeof cfgOpenGroup === 'function') cfgOpenGroup('grpModel');
+    }
     toast((isZh ? '已设为 System Prompt: ' : 'Set as system prompt: ') + t.name, 'ok');
   } else {
     const input = $('userInput');

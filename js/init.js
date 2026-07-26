@@ -3,7 +3,9 @@
    ============================================================ */
 
 // ── 配置变更监听 ──
-['cfgBaseUrl', 'cfgApiKey', 'cfgSystem', 'cfgTemp', 'cfgMaxTok'].forEach(id => {
+// 两个搜索 Key 原先没有独立监听（只能靠别的字段变更捎带保存），一并补上；
+// saveConfig 内部会刷新分组徽标，折叠状态下也能立刻看到"已配置/几个 Key"
+['cfgBaseUrl', 'cfgApiKey', 'cfgSystem', 'cfgTemp', 'cfgMaxTok', 'cfgSerpApiKey', 'cfgBraveKey'].forEach(id => {
   $(id)?.addEventListener('change', saveConfig);
 });
 $('modelSelect')?.addEventListener('change', saveConfig);

@@ -55,64 +55,98 @@
   <div class="gs-results" id="gsResults"></div>
   <div class="conv-list" id="convList"></div>
   <div class="config-panel" id="configPanel">
-    <div class="config-row">
-        <label>Base URL</label>
-      <input id="cfgBaseUrl" value="" placeholder="https://api.openai.com/v1">
-    </div>
-    <div class="config-row">
-        <label>API Key</label>
-      <input id="cfgApiKey" type="password" value="" placeholder="sk-...">
-    </div>
-    <div class="config-row">
-      <label>System Prompt</label>
-      <textarea id="cfgSystem" rows="3" style="width:100%;background:var(--input-bg);border:1px solid var(--border);
-        border-radius:6px;padding:7px 10px;color:var(--text);font-size:.82rem;outline:none;resize:vertical;
-        font-family:var(--font);min-height:60px;transition:border .2s"
-        placeholder="System Prompt (supports multi-line)">You are a helpful, highly knowledgeable assistant. Think step by step, break down complex problems into smaller parts, reason through each carefully, and show your chain of thought before giving a final answer. Be thorough, precise, and cite sources when possible.</textarea>
-    </div>
-    <div style="display:flex;gap:6px">
-      <div class="config-row" style="flex:1">
-        <label>Temperature</label>
-        <input id="cfgTemp" type="number" value="0.7" min="0" max="2" step="0.1">
+    <details class="cfg-group" id="grpApi" open ontoggle="cfgGroupToggled(event)">
+      <summary class="cfg-group-head">
+        <span class="cfg-group-title" id="grpApiTitle">API 连接</span>
+        <span class="cfg-group-badge" id="grpApiBadge"></span>
+      </summary>
+      <div class="cfg-group-body">
+        <div class="config-row">
+          <label>Base URL</label>
+          <input id="cfgBaseUrl" value="" placeholder="https://api.openai.com/v1">
+        </div>
+        <div class="config-row">
+          <label>API Key</label>
+          <input id="cfgApiKey" type="password" value="" placeholder="sk-...">
+        </div>
       </div>
-      <div class="config-row" style="flex:1">
-        <label id="maxTokLabel">Max Tokens</label>
-        <input id="cfgMaxTok" type="number" value="8192" min="1" max="200000">
+    </details>
+    <details class="cfg-group" id="grpModel" ontoggle="cfgGroupToggled(event)">
+      <summary class="cfg-group-head">
+        <span class="cfg-group-title" id="grpModelTitle">模型参数</span>
+        <span class="cfg-group-badge" id="grpModelBadge"></span>
+      </summary>
+      <div class="cfg-group-body">
+        <div class="config-row">
+          <label>System Prompt</label>
+          <textarea id="cfgSystem" rows="3" class="cfg-textarea"
+            placeholder="System Prompt (supports multi-line)">You are a helpful, highly knowledgeable assistant. Think step by step, break down complex problems into smaller parts, reason through each carefully, and show your chain of thought before giving a final answer. Be thorough, precise, and cite sources when possible.</textarea>
+        </div>
+        <div class="cfg-duo">
+          <div class="config-row">
+            <label>Temperature</label>
+            <input id="cfgTemp" type="number" value="0.7" min="0" max="2" step="0.1">
+          </div>
+          <div class="config-row">
+            <label id="maxTokLabel">Max Tokens</label>
+            <input id="cfgMaxTok" type="number" value="8192" min="1" max="200000">
+          </div>
+        </div>
+        <div class="config-hint-line">
+          <span class="config-hint" id="maxTokHint">仅限单次<b>输出</b>长度，非上下文窗口。</span>
+          <button type="button" class="cfg-info" id="maxTokInfoBtn" aria-expanded="false"
+            aria-controls="maxTokDetail" onclick="cfgToggleInfo('maxTokDetail', this)">ⓘ</button>
+        </div>
+        <div class="cfg-detail" id="maxTokDetail" hidden></div>
       </div>
-    </div>
-    <div class="config-hint" id="maxTokHint" style="font-size:.7rem;color:var(--text3);margin:-2px 0 6px;line-height:1.4">
-      单次<b>输出</b>上限（发给 API 的 max_tokens），不是上下文窗口。多数模型上限 4k–32k，填过大会返回 400。
-    </div>
-    <div class="config-row">
-      <label>SerpAPI Key</label>
-      <input id="cfgSerpApiKey" type="password" value="" placeholder="your_serpapi_key">
-    </div>
-    <div class="config-row">
-      <label>Brave Search Key</label>
-      <input id="cfgBraveKey" type="password" value="" placeholder="your_brave_key">
-    </div>
-    <div class="search-toggle" style="margin-bottom:6px">
-      <input type="checkbox" id="cfgSearchEnabled" checked>
-      <label for="cfgSearchEnabled">启用 Agent 联网能力（搜索+抓取网页）</label>
-    </div>
-    <div class="search-toggle" style="margin-bottom:2px">
-      <input type="checkbox" id="cfgCodeEnabled" onchange="saveConfig()">
-      <label for="cfgCodeEnabled" id="codeEnabledLabel">启用 Agent 代码执行（Python / JS 本地沙箱）</label>
-    </div>
-    <div class="config-hint" id="codeEnabledHint" style="font-size:.68rem;color:var(--text3);margin:0 0 8px;line-height:1.45">
-      开启后模型可在<b>你的浏览器里执行代码</b>。Python 跑在 Pyodide WASM 沙箱内，无法访问本机文件系统，
-      只能读取你显式放入缓存区的文件；JS 跑在 Web Worker 里。首次调用需下载约 10MB 运行时。
-    </div>
-    <div class="config-row" id="toolChoiceRow">
-      <label id="toolChoiceLabel">工具调用策略</label>
-      <select id="cfgToolChoice" onchange="setToolChoice(this.value)"
-        style="width:100%;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:.82rem;outline:none">
-        <option value="auto">自动（模型自行决定是否调用）</option>
-        <option value="required">强制调用（至少调用一次工具）</option>
-        <option value="none">禁用工具（仅用已有知识回答）</option>
-      </select>
-    </div>
-    <div style="display:flex;gap:6px;margin-top:4px">
+    </details>
+    <details class="cfg-group" id="grpAgent" ontoggle="cfgGroupToggled(event)">
+      <summary class="cfg-group-head">
+        <span class="cfg-group-title" id="grpAgentTitle">Agent 能力</span>
+        <span class="cfg-group-badge" id="grpAgentBadge"></span>
+      </summary>
+      <div class="cfg-group-body">
+        <div class="search-toggle" style="margin-bottom:6px">
+          <input type="checkbox" id="cfgSearchEnabled" checked>
+          <label for="cfgSearchEnabled">启用 Agent 联网能力（搜索+抓取网页）</label>
+        </div>
+        <div class="search-toggle" style="margin-bottom:2px">
+          <input type="checkbox" id="cfgCodeEnabled" onchange="saveConfig()">
+          <label for="cfgCodeEnabled" id="codeEnabledLabel">启用 Agent 代码执行（Python / JS 本地沙箱）</label>
+        </div>
+        <div class="config-hint-line">
+          <span class="config-hint" id="codeEnabledHint">代码在<b>你的浏览器沙箱</b>内运行，首次约 10MB。</span>
+          <button type="button" class="cfg-info" id="codeInfoBtn" aria-expanded="false"
+            aria-controls="codeEnabledDetail" onclick="cfgToggleInfo('codeEnabledDetail', this)">ⓘ</button>
+        </div>
+        <div class="cfg-detail" id="codeEnabledDetail" hidden></div>
+        <div class="config-row" id="toolChoiceRow" style="margin-bottom:0">
+          <label id="toolChoiceLabel">工具调用策略</label>
+          <select id="cfgToolChoice" onchange="setToolChoice(this.value)">
+            <option value="auto">自动（模型自行决定是否调用）</option>
+            <option value="required">强制调用（至少调用一次工具）</option>
+            <option value="none">禁用工具（仅用已有知识回答）</option>
+          </select>
+        </div>
+      </div>
+    </details>
+    <details class="cfg-group" id="grpSearch" ontoggle="cfgGroupToggled(event)">
+      <summary class="cfg-group-head">
+        <span class="cfg-group-title" id="grpSearchTitle">搜索服务</span>
+        <span class="cfg-group-badge" id="grpSearchBadge"></span>
+      </summary>
+      <div class="cfg-group-body">
+        <div class="config-row">
+          <label>SerpAPI Key</label>
+          <input id="cfgSerpApiKey" type="password" value="" placeholder="your_serpapi_key">
+        </div>
+        <div class="config-row" style="margin-bottom:0">
+          <label>Brave Search Key</label>
+          <input id="cfgBraveKey" type="password" value="" placeholder="your_brave_key">
+        </div>
+      </div>
+    </details>
+    <div class="cfg-actions">
       <button class="btn btn-ghost btn-sm" style="flex:1" onclick="showModelListModal()">📋 模型列表</button>
       <button class="btn btn-ghost btn-sm" style="flex:1" onclick="checkBalance()">💰 余额</button>
       <button class="btn btn-ghost btn-sm" style="flex:1" onclick="checkSearchKeyUsage()">🔍 搜索用量</button>
@@ -308,6 +342,11 @@
       document.getElementById('cfgApiKey').value = key;
       saveConfig();
       overlay.remove();
+      // 首次配置完成，「API 连接」的强制展开可以撤了，按用户偏好重新落位
+      if (typeof cfgApplyGroups === 'function') {
+        try { cfgApplyGroups(JSON.parse(localStorage.getItem('ai-chat-cfg') || '{}').groups); }
+        catch (e) {}
+      }
     };
   }
 })();
