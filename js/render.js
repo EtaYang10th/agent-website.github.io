@@ -2,7 +2,6 @@
    ETA (Edge Thin Agent) — Rendering (Markdown, Messages, Chat, List)
    ============================================================ */
 
-// ── 渲染会话列表 ──
 function renderConvList() {
   const list = $('convList');
   const convs = Object.values(STATE.conversations).sort((a, b) => b.createdAt - a.createdAt);
@@ -15,7 +14,6 @@ function renderConvList() {
   `).join('');
 }
 
-// ── 渲染 Thinking 块 ──
 function renderThinkingBlock(thinking, isActive) {
   if (!thinking) return '';
   const lines = thinking.split('\n').length;
@@ -81,7 +79,6 @@ function sanitizeHtml(html) {
   });
 }
 
-// ── 渲染 Markdown ──
 function renderMd(text) {
   if (!text) return '';
   const blockMath = [];
@@ -136,7 +133,6 @@ document.addEventListener('click', e => {
   if (btn) { e.preventDefault(); copyCode(btn); }
 });
 
-// ── 渲染聊天区域 ──
 function renderChat() {
   const conv = getActiveConv();
   const container = $('chatMessages');
@@ -168,8 +164,6 @@ function renderChat() {
   container.innerHTML = html;
 
   const msgCount = path.length;
-  // 注：该代理上报的 prompt_tokens 存在虚高 bug（不影响实际扣费），
-  // 故只累计可信的 completion_tokens（实际生成量）。
   let outTokens = 0;
   for (const node of path) {
     if (node.usage) outTokens += (node.usage.completion_tokens || 0);
@@ -180,8 +174,10 @@ function renderChat() {
   if (typeof reattachCodeResultCards === 'function') reattachCodeResultCards();
   if (typeof mountArtifacts === 'function') mountArtifacts(container);
 
+  /* 这里必须强制置底：上面重建了 innerHTML，scrollTop 已被浏览器归零，
+     "用户是否贴底"的判断此刻永远为假，不强制的话切换会话会停在顶部。 */
   requestAnimationFrame(() => {
-    $('chatArea').scrollTop = $('chatArea').scrollHeight;
+    scrollChatToBottom(true);
   });
 }
 
@@ -262,7 +258,6 @@ function copyMsgContent(nodeId) {
   navigator.clipboard.writeText(conv.tree[nodeId].content).then(() => toast('已复制', 'ok'));
 }
 
-// ── 编辑消息 ──
 function editMessage(nodeId) {
   const conv = getActiveConv();
   if (!conv || !conv.tree[nodeId]) return;

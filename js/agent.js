@@ -20,6 +20,8 @@ const TOOL_NAME_TO_CMD = {
   ctx_delete: { type: 'ctx_delete', field: 'id' },
   run_python: { type: 'run_python', field: 'code' },
   run_js: { type: 'run_js', field: 'code' },
+  memory_write: { type: 'memory_write', field: 'content' },
+  memory_delete: { type: 'memory_delete', field: 'id' },
 };
 
 // 搜索类工具受"联网开关"控制；代码执行工具受独立的"代码执行开关"控制
@@ -28,6 +30,15 @@ function isSearchToolsEnabled() {
 }
 function isCodeToolsEnabled() {
   return !!($('cfgCodeEnabled') && $('cfgCodeEnabled').checked);
+}
+/* 本轮是否存在任何可用工具。doGenerate 用它决定"收到 tool_calls 却无工具"时是否退出循环；
+   记忆与自定义 HTTP 工具不受联网/代码开关管辖，所以不能只看那两个开关。 */
+function isAnyToolsEnabled() {
+  if (STATE.toolChoice === 'none') return false;
+  if (isSearchToolsEnabled() || isCodeToolsEnabled()) return true;
+  if (typeof memEnabled === 'function' && memEnabled()) return true;
+  if (typeof ctGetAll === 'function' && ctGetAll().some(t => t.enabled)) return true;
+  return false;
 }
 
 function getToolDefinitions() {
@@ -58,9 +69,12 @@ function getToolDefinitions() {
   };
   // 用户自定义 HTTP 工具（js/custom-tools.js）：与内置开关无关，启用即注册
   const customTools = (typeof ctGetToolDefinitions === 'function') ? ctGetToolDefinitions() : [];
+  // 长期记忆工具（js/memory.js）：由记忆自身的开关控制，与联网/代码无关
+  const memTools = (typeof memGetToolDefinitions === 'function') ? memGetToolDefinitions() : [];
+  const extraTools = customTools.concat(memTools);
   if (!isSearchToolsEnabled()) {
-    if (tools.length || customTools.length) ctxTools();
-    return tools.concat(customTools);
+    if (tools.length || extraTools.length) ctxTools();
+    return tools.concat(extraTools);
   }
   const q = { query: { type: 'string', description: 'Search keywords' } };
   tools.push(...[
@@ -77,7 +91,7 @@ function getToolDefinitions() {
       { url: { type: 'string', description: 'Full URL starting with http(s)://' } }, ['url']),
   ]);
   ctxTools();
-  return tools.concat(customTools);
+  return tools.concat(extraTools);
 }
 
 // 把流式累积的 tool_calls（arguments 为 JSON 字符串）解析为内部 cmd 列表
@@ -109,12 +123,13 @@ function toolCallsToCommands(toolCalls) {
       if (args.length !== undefined) cmd.length = args.length;
     }
     if (mapping.type === 'ctx_search' && args.top_k !== undefined) cmd.topK = args.top_k;
+    // memory_write 的 id 是可选的：带 id 表示覆盖更新已有条目而不是新增
+    if (mapping.type === 'memory_write' && args.id !== undefined) cmd.memId = String(args.id || '').trim();
     cmds.push(cmd);
   }
   return cmds;
 }
 
-// 联网工具的使用指南（原生 function calling，工具 schema 单独通过 tools 字段传递）
 // 代码执行工具的使用指南（独立开关，与联网能力互不依赖）
 function getCodeToolsPrompt() {
   if (!isCodeToolsEnabled()) return '';
@@ -144,6 +159,7 @@ Principles:
 - The sandbox cannot access the local filesystem or the network. Do not attempt network calls or disk writes; use fetch_page when you need web content.`;
 }
 
+// 联网工具的使用指南（原生 function calling，工具 schema 单独通过 tools 字段传递）
 function getSearchSystemPrompt() {
   if (!isSearchToolsEnabled()) return getCodeToolsPrompt();
   const isZh = STATE.lang === 'zh';

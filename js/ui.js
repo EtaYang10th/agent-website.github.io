@@ -2,7 +2,6 @@
    ETA (Edge Thin Agent) — UI (Modal, Export, Settings, Balance, Model List)
    ============================================================ */
 
-// ── 模型列表 ──
 async function showModelListModal() {
   const cfg = getConfig();
   if (!cfg.baseUrl || !cfg.apiKey) { toast(STATE.lang === 'zh' ? '请先配置 Base URL 和 API Key' : 'Please configure Base URL and API Key first', 'fail'); return; }
@@ -115,21 +114,10 @@ function extractBalanceSummary(data) {
   return s;
 }
 
-// ── SerpAPI 用量查询（新标签页打开 JSON）──
-function checkSerpApiUsage() {
-  const key = $('cfgSerpApiKey').value.trim();
-  if (!key) { toast('请先填写 SerpAPI Key', 'fail'); return; }
-  window.open(`https://serpapi.com/account.json?api_key=${encodeURIComponent(key)}`, '_blank');
-}
-
-// ── Brave Search 用量查询（打开 Dashboard）──
-function checkBraveUsage() {
-  const key = $('cfgBraveKey').value.trim();
-  if (!key) { toast('请先填写 Brave Search Key', 'fail'); return; }
-  window.open('https://api-dashboard.search.brave.com/app/subscriptions/usage-limits', '_blank');
-}
-
-// ── 搜索 Key 用量统一查询 ──
+/* ── 搜索 Key 用量统一查询 ──
+   取代了早期各查一个服务的 checkSerpApiUsage / checkBraveUsage（已删除）：
+   这里一次把两家的用量都拉出来，SerpAPI 有用量接口就画进度条，
+   Brave 没有用量 API，只能发一次探测搜索验证 Key 有效性并给出 Dashboard 链接。 */
 async function checkSearchKeyUsage() {
   const serpKey = $('cfgSerpApiKey').value.trim();
   const braveKey = $('cfgBraveKey').value.trim();
@@ -213,7 +201,6 @@ function closeModal() {
   if (overlay) overlay.remove();
 }
 
-// ── 导出对话 ──
 function exportConversation() {
   const conv = getActiveConv();
   if (!conv) { toast(STATE.lang === 'zh' ? '没有活跃对话' : 'No active conversation', 'fail'); return; }
@@ -223,12 +210,7 @@ function exportConversation() {
     const role = node.role === 'user' ? '👤 User' : '🤖 Assistant';
     md += `## ${role} (${node.time})\n\n${node.content}\n\n---\n\n`;
   }
-  const blob = new Blob([md], { type: 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = (conv.title || 'chat') + '.md';
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadBlob(md, (conv.title || 'chat') + '.md', 'text/markdown');
   toast(STATE.lang === 'zh' ? '已导出对话' : 'Conversation exported', 'ok');
 }
 
@@ -262,6 +244,14 @@ function showSettingsModal() {
         <input id="customModel" placeholder="${t('customModelPlaceholder')}" style="flex:1;background:var(--input-bg);
           border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);outline:none">
         <button class="btn btn-primary btn-sm" onclick="addCustomModel()">${t('addModel')}</button>
+      </div>
+    </div>
+    <div class="config-row" style="margin-top:12px">
+      <label>${isZh ? '个人信息与长期记忆' : 'Personal Info & Memory'}</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px">
+        <button class="btn btn-ghost btn-sm" onclick="showProfileModal()">👤 ${isZh ? '个人信息' : 'Personal info'}</button>
+        <button class="btn btn-ghost btn-sm" onclick="showMemoryModal()">🧠 ${isZh ? '长期记忆' : 'Memory'}</button>
+        <span style="font-size:.72rem;color:var(--text3)">${(typeof memSettingsSummary === 'function') ? memSettingsSummary(isZh) : ''}</span>
       </div>
     </div>
     <div class="config-row" style="margin-top:12px">
@@ -311,12 +301,6 @@ function clearAllConversations() {
 }
 
 function exportAllConversations() {
-  const data = JSON.stringify(STATE.conversations, null, 2);
-  const blob = new Blob([data], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'eta-export.json';
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadJson(STATE.conversations, 'eta-export.json');
   toast(STATE.lang === 'zh' ? '已导出全部对话' : 'All conversations exported', 'ok');
 }

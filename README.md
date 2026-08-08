@@ -9,6 +9,8 @@ A pure browser-based AI Agent client — no installation, no backend, no Docker,
 - **Agent Web Search** — Built-in agent with internet access: Google (SerpAPI), Brave Search, arXiv, Semantic Scholar, GitHub search, and webpage scraping. Up to 20 rounds of autonomous search per query.
 - **Conversation Tree** — Branch, edit, and rewind conversations. Navigate between branches with ease.
 - **Knowledge Buffer** — Right-side panel for caching search results, uploaded files, and fetched web pages. The agent reads from it on demand.
+- **Long-term Memory** — A small set of durable facts about you, shared across conversations. The agent decides what is worth keeping (stable preferences and habits only, never task details), with a hard character cap; going over triggers one LLM call that merges and shortens entries. Inspect, edit or delete entries individually via 🧠 in the top bar, or turn the whole thing off.
+- **Personal Info** — A fixed profile you fill in yourself (name, role, tech stack, tone and format preferences) under 👤 in the top bar. Read-only to the model and never auto-compressed.
 - **File Upload** — Supports images (inline), PDF, DOCX, PPTX, XLSX, and various text/code files.
 - **Markdown + Math** — Full Markdown rendering with syntax highlighting (highlight.js) and LaTeX math (KaTeX).
 - **Thinking Models** — Supports `<think>` tag parsing for chain-of-thought models, with collapsible thinking blocks.
@@ -18,7 +20,7 @@ A pure browser-based AI Agent client — no installation, no backend, no Docker,
 - **Export** — Export single conversations as Markdown or all conversations as JSON.
 - **Balance Check** — Query your API provider's remaining balance.
 - **Debug Panel** — Real-time agent loop logs with console interception.
-- **Data Privacy** — All data stored locally in your browser (localStorage). Nothing is sent anywhere except your configured API endpoint.
+- **Data Privacy** — All data stored locally in your browser (IndexedDB, with settings in localStorage), including long-term memory and your profile. Nothing is sent anywhere except your configured API endpoint.
 
 ## Quick Start
 

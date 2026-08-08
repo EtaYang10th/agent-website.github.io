@@ -120,7 +120,7 @@ function timelineToolEnd(aiMsgId, handle, info) {
     t.endedAt = Date.now();
     t.size = (info && info.size) || 0;
     t.err = (info && info.err) ? String(info.err).slice(0, 200) : '';
-    // 工具结果以 '[' 开头是本项目约定的错误/空结果格式
+    // ok 由调用方判定（agent-commands.js 负责解析结果前缀），这里只取结论
     t.ok = info && info.ok !== undefined ? !!info.ok : !t.err;
     break;
   }
@@ -291,7 +291,7 @@ function timelineRenderHtml(msgId, tl, node) {
       body += `<div class="tl-tool tl-${state}">`
         + `<span class="tl-tool-ico">${tlIcon(t.type)}</span>`
         + `<span class="tl-tool-name">${escHtml(t.name)}</span>`
-        + (t.arg ? `<span class="tl-tool-arg" title="${escHtml(t.arg)}">${escHtml(t.arg)}</span>` : '')
+        + (t.arg ? `<span class="tl-tool-arg" title="${escAttr(t.arg)}">${escHtml(t.arg)}</span>` : '')
         + `<span class="tl-tool-meta">${tlFmtMs(td)}${t.size ? ' · ' + tlFmtSize(t.size) : ''}</span>`
         + `<span class="tl-tool-mark">${mark}</span></div>`;
       if (t.err) body += `<div class="tl-tool-err">${escHtml(t.err)}</div>`;
@@ -318,7 +318,7 @@ function timelineCostBadge(node) {
       + `估算值，输入 token 因该代理上报虚高仅供参考（上报 ${c.in}，约 ${etaFormatUsd(c.usdIn)}）。`
     : `Estimate: ${c.out} out tokens × $${c.price.out}/1M = ${etaFormatUsd(c.usd)}\n`
       + `Estimate only; input tokens are over-reported by this proxy (${c.in}, ~${etaFormatUsd(c.usdIn)}).`;
-  return `<span class="tl-cost" title="${escHtml(title)}">~${etaFormatUsd(c.usd)}</span>`;
+  return `<span class="tl-cost" title="${escAttr(title)}">~${etaFormatUsd(c.usd)}</span>`;
 }
 
 /* ── 挂载：把时间线插到消息内容区最前面 ──

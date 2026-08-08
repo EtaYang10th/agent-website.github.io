@@ -140,12 +140,7 @@ function onArtifactAction(act, id, wrap, bar, pre, host) {
 }
 
 function downloadArtifact(text, filename, mime) {
-  const blob = new Blob([text], { type: (mime || 'text/plain') + ';charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  downloadBlob(text, filename, (mime || 'text/plain') + ';charset=utf-8');
 }
 
 /* ── 源码 → 可安全嵌入 <script> 的 JS 字面量 ── */

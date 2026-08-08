@@ -21,7 +21,6 @@ let _arenaSession = null; // { convId, userMsgId, cands:[{model, msgId, ok, err,
 
 function arenaIsRunning() { return _arenaRunning; }
 
-// 中断全部候选请求
 function arenaAbortAll() {
   for (const c of _arenaCtrls) { try { c.abort(); } catch (e) {} }
   _arenaCtrls = [];
@@ -228,7 +227,7 @@ function arenaRenderHtml(conv, s) {
       ? `<span class="arena-cost">~${etaFormatUsd(cost.usd)}</span>` : '';
     return `<div class="arena-col arena-${state}">
       <div class="arena-col-head">
-        <span class="arena-model" title="${escHtml(c.model)}">${escHtml(c.model)}</span>
+        <span class="arena-model" title="${escAttr(c.model)}">${escHtml(c.model)}</span>
         <span class="arena-badge arena-badge-${state}">${badge}</span>
       </div>
       <div class="arena-meta">${content.length} ${isZh ? '字符' : 'chars'}${costTag}</div>

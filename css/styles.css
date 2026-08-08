@@ -632,3 +632,41 @@ html[data-theme="light"] .msg-content :not(pre) > code { background: rgba(99,102
 .ct-form .ct-hint { text-transform: none; letter-spacing: 0; color: var(--text3); opacity: .8; font-size: .66rem; }
 .ct-form-grid { display: flex; gap: 8px; }
 .ct-form-grid > div { flex: 1; }
+
+/* ── 长期记忆 (js/memory-ui.js) ── */
+.mem-wrap { font-size: .82rem; }
+.mem-meter { margin: 12px 0 10px; }
+.mem-meter-head { display: flex; justify-content: space-between; align-items: center;
+  font-size: .72rem; color: var(--text3); margin-bottom: 5px; gap: 8px; flex-wrap: wrap; }
+.mem-limit-edit { display: inline-flex; align-items: center; gap: 5px; }
+.mem-limit-edit input { width: 78px; background: var(--input-bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 5px; color: var(--text); font-size: .72rem; outline: none; }
+.mem-bar { height: 6px; background: var(--input-bg); border-radius: 3px; overflow: hidden; }
+.mem-bar-fill { height: 100%; border-radius: 3px; transition: width .3s, background .3s; }
+.mem-list { max-height: 40vh; overflow-y: auto; margin-bottom: 10px; }
+.mem-empty { color: var(--text3); font-size: .8rem; text-align: center; padding: 22px 10px; line-height: 1.7; }
+.mem-row { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card);
+  padding: 8px 9px; margin-bottom: 6px; }
+.mem-row:hover { border-color: var(--border2); }
+.mem-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+.mem-row-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  font-size: .66rem; color: var(--text3); min-width: 0; }
+.mem-row-id { font-family: var(--mono); opacity: .75; }
+.mem-row-ops { display: flex; gap: 2px; flex-shrink: 0; }
+.mem-row-ops .btn { padding: 2px 7px; font-size: .7rem; }
+.mem-tag { font-size: .6rem; border: 1px solid var(--border2); border-radius: 4px;
+  padding: 0 5px; color: var(--text2); }
+.mem-tag-user { color: var(--accent2); border-color: var(--accent); background: var(--accent-glow); }
+.mem-row-text, .mem-add textarea, .prof-input { width: 100%; background: var(--input-bg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; color: var(--text);
+  font-size: .78rem; line-height: 1.55; outline: none; font-family: var(--font); resize: vertical; }
+.mem-row-text:focus, .mem-add textarea:focus, .prof-input:focus { border-color: var(--accent); }
+.mem-add { display: flex; gap: 6px; align-items: flex-start; }
+.mem-add textarea { flex: 1; }
+.mem-add .btn { flex-shrink: 0; }
+
+/* ── 用户档案 (js/memory-ui.js) ── */
+.prof-wrap { font-size: .82rem; }
+.prof-form { max-height: 46vh; overflow-y: auto; padding-right: 2px; margin-top: 10px; }
+.prof-label { display: block; font-size: .7rem; text-transform: uppercase; letter-spacing: .03em;
+  color: var(--text3); margin: 10px 0 3px; }

@@ -85,7 +85,6 @@ function retrTokenize(text) {
   return tokens;
 }
 
-// 词频表
 function retrTermFreq(tokens) {
   const tf = Object.create(null);
   for (const t of tokens) tf[t] = (tf[t] || 0) + 1;

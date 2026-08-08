@@ -2,7 +2,6 @@
    ETA (Edge Thin Agent) — Context Buffer (Knowledge Cache)
    ============================================================ */
 
-// ── 获取当前对话的缓存区 ──
 function getCtxBuffer() {
   const conv = getActiveConv();
   if (!conv) return [];
@@ -10,7 +9,6 @@ function getCtxBuffer() {
   return conv.contextBuffer;
 }
 
-// ── Token 估算 ──
 function estimateTokens(text) {
   if (!text) return 0;
   let tokens = 0;
@@ -169,7 +167,8 @@ function ctxPreviewItem(id) {
   const item = getCtxBuffer().find(i => i.id === id);
   if (!item) return;
   const preview = item.content.length > 2000 ? item.content.slice(0, 2000) + '\n\n[...已截断]' : item.content;
-  showModal(`📄 ${item.name}`, `<div style="font-size:.78rem;color:var(--text3);margin-bottom:8px">${item.type} · ${item.tokens.toLocaleString()} tokens · ${formatSize(item.size)}</div>
+  // name/type 可能来自抓取的网页标题或模型给的文件名，两者都要转义（retrieval.js 同处已转义）
+  showModal(`📄 ${escHtml(item.name)}`, `<div style="font-size:.78rem;color:var(--text3);margin-bottom:8px">${escHtml(item.type)} · ${item.tokens.toLocaleString()} tokens · ${formatSize(item.size)}</div>
     <pre style="background:var(--input-bg);padding:12px;border-radius:8px;font-size:.78rem;overflow:auto;max-height:50vh;white-space:pre-wrap;word-break:break-word;color:var(--text2)">${escHtml(preview)}</pre>`);
 }
 

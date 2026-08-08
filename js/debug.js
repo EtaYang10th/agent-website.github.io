@@ -27,6 +27,8 @@ function debugLog(msg, type = 'info') {
   el.className = `debug-entry ${type}`;
   el.innerHTML = `<span class="debug-time">${ts}</span>${_debugEscHtml(msg)}`;
   log.appendChild(el);
+  // 数组裁到 500 条，DOM 也要同步裁：Agent 循环每条日志都建一个节点，否则无界增长
+  while (log.children.length > _maxDebugLogs) log.removeChild(log.firstChild);
   if (log.scrollHeight - log.scrollTop - log.clientHeight < 120) {
     log.scrollTop = log.scrollHeight;
   }

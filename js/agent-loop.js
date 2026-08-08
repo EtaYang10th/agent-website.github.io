@@ -18,15 +18,16 @@ function matchPartialClose(s) {
   return 0;
 }
 
-// ── 流式响应处理 ──
 async function handleStreamResponseAgent(resp, conv, aiMsgId) {
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
   let newContent = '';
-  const contentEl = document.getElementById('msg-content-' + aiMsgId);
-  const searchEnabled = STATE.searchMode && $('cfgSearchEnabled').checked;
-  let rafPending = false;
+  /* 每次刷新都重新按 id 取节点，不缓存：renderChat() 会整体重建 #chatMessages，
+     缓存下来的引用会变成脱离文档的孤儿节点，后续输出全写进去、界面看着"卡住"。
+     触发路径包括生成期间切换会话、改设置开关、eta-config 异步加载完成后的重绘。 */
+  const getContentEl = () => document.getElementById('msg-content-' + aiMsgId);
+  let flushPending = false;
   let thinkingContent = '';
   // 用消息节点上记录的模型（Planner/Executor 分工时它才是真正发请求的那个）
   const streamModel = (conv.tree[aiMsgId] && conv.tree[aiMsgId].model) || getConfig().model;
@@ -37,6 +38,37 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
   const READ_TIMEOUT = (typeof etaCfg === 'function') ? etaCfg('readTimeout') : 90000;
   const toolCallsAcc = []; // 按 index 累积的 tool_calls（arguments 为分片拼接的 JSON 字符串）
   let finishReason = null;
+
+  /* 流式刷新节流。
+     原来用 requestAnimationFrame（~60fps），而每帧都对"当前累积的全文"重跑一遍
+     renderMd —— 内容线性增长、帧数也线性增长，总成本 O(n²)，且每次都重新
+     marked.parse + 逐个 katex.renderToString + DOMPurify 全量净化。
+     实测一条 7.6k 字符的回答累计约 2.3s 主线程 CPU，而最终态只需 12ms。
+     节流到 STREAM_FLUSH_MS 把帧数降到约 1/6，肉眼仍是连续追字。 */
+  const STREAM_FLUSH_MS = 100;
+  let lastFlush = 0;
+  let flushTimer = null;
+
+  function flushNow() {
+    flushPending = false;
+    lastFlush = Date.now();
+    const el = getContentEl();
+    if (!el) return;
+    const node = conv.tree[aiMsgId];
+    if (!node) return;
+    let displayHtml = '';
+    if (node.thinking) displayHtml += renderThinkingBlock(node.thinking, !node.content);
+    displayHtml += renderMd(node.content);
+    el.innerHTML = displayHtml;
+    scrollChatToBottom();
+  }
+
+  function scheduleFlush() {
+    if (flushPending) return;
+    flushPending = true;
+    const wait = Math.max(0, STREAM_FLUSH_MS - (Date.now() - lastFlush));
+    flushTimer = setTimeout(() => { flushTimer = null; requestAnimationFrame(flushNow); }, wait);
+  }
 
   while (true) {
     let done, value;
@@ -134,28 +166,7 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
           conv.tree[aiMsgId].content += contentDelta;
         }
 
-        if (isThinkingModel && inThinkTag && conv.tree[aiMsgId].thinking && !rafPending) {
-          rafPending = true;
-          requestAnimationFrame(() => {
-            rafPending = false;
-            if (contentEl) contentEl.innerHTML = renderThinkingBlock(conv.tree[aiMsgId].thinking, true);
-            $('chatArea').scrollTop = $('chatArea').scrollHeight;
-          });
-        }
-
-        if (!rafPending) {
-          rafPending = true;
-          requestAnimationFrame(() => {
-            rafPending = false;
-            let displayHtml = '';
-            if (conv.tree[aiMsgId].thinking) {
-              displayHtml += renderThinkingBlock(conv.tree[aiMsgId].thinking, !conv.tree[aiMsgId].content);
-            }
-            displayHtml += renderMd(conv.tree[aiMsgId].content);
-            if (contentEl) contentEl.innerHTML = displayHtml;
-            $('chatArea').scrollTop = $('chatArea').scrollHeight;
-          });
-        }
+        scheduleFlush();
       }
       if (chunk?.usage) {
         conv.tree[aiMsgId].usage = {
@@ -188,6 +199,11 @@ async function handleStreamResponseAgent(resp, conv, aiMsgId) {
   } else if (!newContent && thinkingContent) {
     console.warn(`[Stream] 流结束: newContent 为空但有 thinking (${thinkingContent.length} 字符)`);
   }
+
+  /* 收尾必须同步渲染一次：节流可能还有一次刷新挂在 timer 上没跑，
+     而 doGenerate 紧接着就会读 content 决定下一步，不能让界面停在上一帧。 */
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  flushNow();
 
   console.log(`[Stream] 完成: newContent=${newContent.length}字符, thinking=${thinkingContent.length}字符, tool_calls=${toolCalls.length}, finish=${finishReason}`);
   return { content: newContent, toolCalls, finishReason };

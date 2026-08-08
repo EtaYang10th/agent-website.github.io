@@ -69,8 +69,8 @@ function ctFindByName(name) { return CT_TOOLS.find(t => t.enabled && t.name === 
 
 // ── 内置工具名清单（自定义工具不得与之重名）──
 function ctBuiltinNames() {
+  // 读 TOOL_NAME_TO_CMD 而不是维护一份副本，新增内置工具时无需同步改这里
   const names = (typeof TOOL_NAME_TO_CMD === 'object' && TOOL_NAME_TO_CMD) ? Object.keys(TOOL_NAME_TO_CMD) : [];
-  // ctx_search 等后续新增的内置名也会自动出现在 TOOL_NAME_TO_CMD 里
   return new Set(names);
 }
 
@@ -499,12 +499,7 @@ function ctExportTools(withSecrets) {
       return c;
     }),
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = 'eta-custom-tools.json';
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadJson(payload, 'eta-custom-tools.json');
   toast(withSecrets
     ? (STATE.lang === 'en' ? 'Exported (headers included)' : '已导出（含 headers，注意保密）')
     : (STATE.lang === 'en' ? 'Exported without headers' : '已导出（不含 headers）'), 'ok');

@@ -13,7 +13,8 @@
        —— 流式响应经不起缓存，且回放旧回答会误导用户
    ============================================================ */
 
-const SW_VERSION = 'eta-v1';
+// 改动预缓存清单后必须递增版本号，否则老 SW 会一直用旧的文件列表
+const SW_VERSION = 'eta-v2';
 const LOCAL_CACHE = SW_VERSION + '-local';
 const CDN_CACHE = SW_VERSION + '-cdn';
 
@@ -26,7 +27,9 @@ const PRECACHE_FILES = [
   '', 'index.html', 'manifest.json', 'css/styles.css',
   'js/debug.js', 'js/storage.js', 'js/state.js', 'js/conversation.js', 'js/render.js',
   'js/artifacts.js', 'js/file-parser.js', 'js/search.js', 'js/retrieval.js',
-  'js/context-buffer.js', 'js/custom-tools.js', 'js/agent.js', 'js/agent-loop.js',
+  'js/context-buffer.js', 'js/custom-tools.js',
+  'js/memory.js', 'js/profile.js', 'js/memory-ui.js',
+  'js/agent.js', 'js/agent-loop.js',
   'js/sandbox-python.js', 'js/sandbox-js.js', 'js/agent-commands.js', 'js/agent-generate.js',
   'js/eta-config.js', 'js/agent-timeline.js', 'js/multi-model.js', 'js/voice.js',
   'js/prompt-library.js', 'js/export-plus.js', 'js/pwa.js', 'js/eta-settings.js',

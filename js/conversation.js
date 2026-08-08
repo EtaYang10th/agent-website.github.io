@@ -71,7 +71,6 @@ function addMessageToTree(conv, parentId, role, content, model, attachments) {
   return msgId;
 }
 
-// 获取从根到指定节点的路径
 function getPathToNode(conv, nodeId) {
   const path = [];
   let cur = nodeId;
@@ -84,13 +83,11 @@ function getPathToNode(conv, nodeId) {
   return path;
 }
 
-// 获取当前活跃路径
 function getActivePath(conv) {
   if (!conv || !conv.activeLeaf) return [];
   return getPathToNode(conv, conv.activeLeaf);
 }
 
-// 构建发送给API的messages数组
 function buildApiMessages(conv, upToNodeId) {
   const cfg = getConfig();
   const path = getPathToNode(conv, upToNodeId || conv.activeLeaf);
@@ -98,7 +95,11 @@ function buildApiMessages(conv, upToNodeId) {
   const searchPrompt = getSearchSystemPrompt();
   const ctxBufferPrompt = buildContextBufferPrompt();
   const langSuffix = getLangSystemSuffix();
-  const systemContent = (cfg.system || '') + langSuffix + searchPrompt + ctxBufferPrompt;
+  // 用户档案（手填）与长期记忆（Agent 自行维护）：都是软依赖，模块缺失时为空串
+  const profilePrompt = (typeof profPromptBlock === 'function') ? profPromptBlock() : '';
+  const memoryPrompt = (typeof memPromptBlock === 'function') ? memPromptBlock() : '';
+  const systemContent = (cfg.system || '') + langSuffix + profilePrompt + memoryPrompt
+    + searchPrompt + ctxBufferPrompt;
   if (systemContent) messages.push({ role: 'system', content: systemContent });
   for (const node of path) {
     const textForApi = node.apiContent || node.content;

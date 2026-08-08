@@ -10,7 +10,6 @@
    代码高亮与公式在离线文件里降级为纯文本块 —— 不为了好看去内联 900KB 的库。
    ============================================================ */
 
-// ── PDF：调起打印 ──
 function exportConversationPdf() {
   const conv = getActiveConv();
   if (!conv) { toast(STATE.lang === 'en' ? 'No active conversation' : '没有活跃对话', 'fail'); return; }
@@ -33,13 +32,7 @@ function exportConversationHtml() {
   const conv = getActiveConv();
   if (!conv) { toast(STATE.lang === 'en' ? 'No active conversation' : '没有活跃对话', 'fail'); return; }
   const html = buildStandaloneHtml(conv);
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = (conv.title || 'chat').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) + '.html';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadBlob(html, (conv.title || 'chat').slice(0, 80) + '.html', 'text/html;charset=utf-8');
   toast(STATE.lang === 'en' ? 'Single-file HTML exported' : '已导出单文件 HTML', 'ok');
 }
 

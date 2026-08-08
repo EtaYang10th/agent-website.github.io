@@ -25,9 +25,21 @@ const BLOB_REF_PREFIX = 'idb-blob:';       // 主表内引用标记
 let _idbAvailable = null;
 let _idbPromise = null;
 let _fallbackNotified = false;
-// 已落盘的 blob 指纹（key -> 长度）。大字段写入后不再变化，
-// 流式生成时 saveState 高频触发，靠它跳过重复写入几 MB 的图片。
+/* 已落盘的 blob 指纹（key -> 指纹）。大字段写入后一般不再变化，
+   流式生成时 saveState 高频触发，靠它跳过重复写入几 MB 的图片。
+
+   指纹不能只用长度：把缓存条目编辑成长度完全相同的新内容时，写入会被跳过，
+   刷新后看到旧内容（静默数据丢失）。所以带上抽样哈希。
+   本文件先于 retrieval.js 加载，故不复用那边的 retrFingerprint，各自独立一份。 */
 const _blobWritten = new Map();
+
+function _blobFingerprint(s) {
+  const str = String(s == null ? '' : s);
+  let h = 5381;
+  const step = str.length > 20000 ? Math.floor(str.length / 4000) : 1;
+  for (let i = 0; i < str.length; i += step) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+  return str.length + ':' + h.toString(36);
+}
 
 // ── 打开数据库（惰性单例） ──
 function idbOpen() {
@@ -213,9 +225,10 @@ async function storageSaveChatState(conversations, activeConvId) {
     await idbOpen();
     let wrote = 0;
     for (const [key, value] of writes) {
-      if (_blobWritten.get(key) === value.length) continue;
+      const fp = _blobFingerprint(value);
+      if (_blobWritten.get(key) === fp) continue;
       await idbSetBlob(key, value);
-      _blobWritten.set(key, value.length);
+      _blobWritten.set(key, fp);
       wrote++;
     }
     await idbSet(STATE_KEY, payload);
@@ -252,7 +265,7 @@ async function storageLoadChatState() {
     // 加载时登记指纹，避免首次 saveState 把所有已存在的 blob 重写一遍
     const trackingGet = async key => {
       const v = await idbGetBlob(key);
-      if (typeof v === 'string') _blobWritten.set(key, v.length);
+      if (typeof v === 'string') _blobWritten.set(key, _blobFingerprint(v));
       return v;
     };
     const { data, missing } = await mergeBlobs(payload.conversations || {}, trackingGet);

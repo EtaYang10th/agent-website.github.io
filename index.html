@@ -80,16 +80,16 @@
         <div class="config-row">
           <label>System Prompt</label>
           <textarea id="cfgSystem" rows="3" class="cfg-textarea"
-            placeholder="System Prompt (supports multi-line)">You are a helpful, highly knowledgeable assistant. Think step by step, break down complex problems into smaller parts, reason through each carefully, and show your chain of thought before giving a final answer. Be thorough, precise, and cite sources when possible.</textarea>
+            placeholder="System Prompt (supports multi-line)">You are a helpful, highly knowledgeable assistant.</textarea>
         </div>
         <div class="cfg-duo">
           <div class="config-row">
             <label>Temperature</label>
-            <input id="cfgTemp" type="number" value="0.7" min="0" max="2" step="0.1">
+            <input id="cfgTemp" type="number" value="0.5" min="0" max="2" step="0.1">
           </div>
           <div class="config-row">
             <label id="maxTokLabel">Max Tokens</label>
-            <input id="cfgMaxTok" type="number" value="8192" min="1" max="200000">
+            <input id="cfgMaxTok" type="number" value="32768" min="1" max="200000">
           </div>
         </div>
         <div class="config-hint-line">
@@ -170,6 +170,8 @@
       <button class="icon-btn" id="debugToggleBtn" onclick="toggleDebugPanel()" title="调试日志" style="position:relative">🐛<span class="debug-badge" id="debugBadge"></span></button>
       <button class="icon-btn" id="arenaBtn" onclick="showArenaModal()" title="模型竞技场（多模型并排对比）">⚔️</button>
       <button class="icon-btn" id="promptLibBtn" onclick="showPromptLibraryModal()" title="Prompt 模板库">📝</button>
+      <button class="icon-btn" id="profileBtn" onclick="showProfileModal()" title="个人信息（用户自己填写）">👤</button>
+      <button class="icon-btn" id="memoryBtn" onclick="showMemoryModal()" title="长期记忆（Agent 自行维护，可编辑）">🧠</button>
       <button class="icon-btn" id="exportBtn" onclick="showExportModal()" title="导出对话">📥</button>
       <button class="icon-btn" onclick="showSettingsModal()" title="设置">⚙</button>
     </div>
@@ -257,6 +259,10 @@
 <script src="js/context-buffer.js"></script>
 <script src="js/retrieval.js"></script>
 <script src="js/custom-tools.js"></script>
+<!-- 长期记忆 / 用户档案：必须先于 agent.js（工具定义）与 conversation.js 的首次调用 -->
+<script src="js/memory.js"></script>
+<script src="js/profile.js"></script>
+<script src="js/memory-ui.js"></script>
 <script src="js/agent.js"></script>
 <script src="js/agent-loop.js"></script>
 <script src="js/sandbox-python.js"></script>
@@ -298,6 +304,9 @@
   if (typeof etaSettingsSectionHtml === 'undefined') missing.push('eta-settings.js');
   if (typeof retrSearch === 'undefined') missing.push('retrieval.js');
   if (typeof ctGetToolDefinitions === 'undefined') missing.push('custom-tools.js');
+  if (typeof memPromptBlock === 'undefined') missing.push('memory.js');
+  if (typeof profPromptBlock === 'undefined') missing.push('profile.js');
+  if (typeof showMemoryModal === 'undefined') missing.push('memory-ui.js');
   if (missing.length > 0) {
     document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#1a1a2e;color:#fff;font-family:system-ui;padding:40px;text-align:center"><div>'
       + '<h1 style="color:#ff6b6b;margin-bottom:16px">⚠️ 加载失败</h1>'

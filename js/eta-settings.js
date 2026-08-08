@@ -72,7 +72,6 @@ function etaSettingsSectionHtml() {
     </div>`;
 }
 
-// ── 保存循环参数 ──
 function etaSettingsSave() {
   const get = id => ($(id) ? $(id).value : '');
   etaCfgSet({

@@ -59,7 +59,6 @@ async function executeAgentCommands(agentCmds, aiMsgId, conv, searchRound, extra
       resolve('__ROUND_TIMEOUT__');
     }, ROUND_TIMEOUT);
   });
-  console.log(`[Agent 循环] 第 ${searchRound} 轮: 等待 allSettled (${agentCmds.length} 条工具调用)`);
   const settled = await Promise.race([Promise.allSettled(cmdPromises), roundTimeout]);
   clearTimeout(roundTimerId);
 
@@ -71,7 +70,6 @@ async function executeAgentCommands(agentCmds, aiMsgId, conv, searchRound, extra
     console.warn(`[Agent 循环] 第 ${searchRound} 轮: 兜底超时后收集结果`);
   } else {
     settledResults = settled;
-    console.log(`[Agent 循环] 第 ${searchRound} 轮: allSettled 完成`);
   }
   settledResults.forEach((r, i) => {
     if (r.status === 'fulfilled' && r.value) {
@@ -111,81 +109,62 @@ async function executeAgentCommands(agentCmds, aiMsgId, conv, searchRound, extra
 }
 
 // ── 执行单条工具调用，返回结果文本（字符串）──
+/* ── 搜索类工具表 ──
+   九个搜索分支的流程完全一致（状态条 → 搜索 → 错误则返回 → 结果卡片 →
+   自动入库 → 格式化给 LLM），只有四处差异，全部收进这张表：
+
+     prefix       状态条/卡片/回传文本共用的标签前缀。'search' 是唯一的空前缀
+                  （直接用裸 query），拼接时不能无条件补 ': '。
+     resolve      取实际的搜索实现（search 与 search_google 共用 doGoogleSearch）。
+                  写成惰性取值而不是直接引用：本表在模块加载时求值，直接引用会
+                  把当时的绑定固化下来，一旦有人调整 index.html 的脚本顺序就会
+                  静默拿到 undefined。惰性取值把查找推迟到调用时。
+     err          错误文案前缀，照抄原字符串（含 Stack Exchange 与前缀不一致
+                  这一处历史瑕疵——要改是独立决定，别混进重构）。
+     withEngine   错误里是否附带 (engine)。只有两个 Google 分支需要：
+                  doGoogleSearch 内部会回退到 Brave，报错时得说明实际用了谁。
+     withFallback 是否给卡片传 fallback 提示。注意 search.js 目前从未给
+                  result.fallback 赋值，所以徽标实际不显示；保留该配置项成本
+                  为零，将来补上字段即可直接生效，故不删。 */
+const SEARCH_TOOLS = {
+  search:               { prefix: '',               resolve: () => doGoogleSearch,        err: 'Search',               withEngine: true, withFallback: true },
+  search_google:        { prefix: 'Google',         resolve: () => doGoogleSearch,        err: 'Google search',        withEngine: true, withFallback: true },
+  search_arxiv:         { prefix: 'arXiv',          resolve: () => doArxivSearch,         err: 'arXiv search' },
+  search_scholar:       { prefix: 'Scholar',        resolve: () => doScholarSearch,       err: 'Scholar search' },
+  search_github:        { prefix: 'GitHub',         resolve: () => doGithubSearch,        err: 'GitHub search' },
+  search_pubmed:        { prefix: 'PubMed',         resolve: () => doPubMedSearch,        err: 'PubMed search' },
+  search_stackexchange: { prefix: 'Stack Overflow', resolve: () => doStackExchangeSearch, err: 'Stack Exchange search' },
+  search_wikipedia:     { prefix: 'Wikipedia',      resolve: () => doWikipediaSearch,     err: 'Wikipedia search' },
+  search_hackernews:    { prefix: 'Hacker News',    resolve: () => doHackerNewsSearch,    err: 'Hacker News search' },
+};
+
+async function runSearchTool(spec, cmd, idx, aiMsgId, cmdSignal) {
+  const label = spec.prefix ? `${spec.prefix}: ${cmd.query}` : cmd.query;
+  showSearchStatus(aiMsgId, 'search', label);
+  console.log(`[搜索 #${idx}] ${cmd.type}: "${cmd.query}" 开始`);
+  const result = await spec.resolve()(cmd.query, undefined, cmdSignal);
+  console.log(`[搜索 #${idx}] ${cmd.type}: "${cmd.query}" 完成`);
+  if (result.error) {
+    const who = spec.withEngine ? ` (${result.engine || '?'})` : '';
+    return `[${spec.err} error${who}: ${result.error}]`;
+  }
+  /* 精确复刻重构前的两种实参形态：带 fallback 能力的分支（两个 Google）原本传
+     `result.fallback ? result.fallbackReason : null`，其余分支根本不传第 6 个参数。
+     appendSearchResultsCard 里是 `if (fallbackInfo)`，null 与 undefined 行为一致，
+     但保持实参一致能让回归比对严格成立。 */
+  if (spec.withFallback) {
+    appendSearchResultsCard(aiMsgId, result.results, label, 'search', result.engine,
+      result.fallback ? result.fallbackReason : null);
+  } else {
+    appendSearchResultsCard(aiMsgId, result.results, label, 'search', result.engine);
+  }
+  ctxAutoSaveSearch(result.results, label, 'search');
+  return formatSearchResultsForLLM(result.results, label);
+}
+
 async function executeSingleCommand(cmd, idx, aiMsgId, cmdSignal) {
-  if (cmd.type === 'search') {
-    showSearchStatus(aiMsgId, 'search', cmd.query);
-    console.log(`[搜索 #${idx}] search: "${cmd.query}" 开始`);
-    const result = await doGoogleSearch(cmd.query, undefined, cmdSignal);
-    console.log(`[搜索 #${idx}] search: "${cmd.query}" 完成`);
-    if (result.error) return `[Search error (${result.engine || '?'}): ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, cmd.query, 'search', result.engine, result.fallback ? result.fallbackReason : null);
-    ctxAutoSaveSearch(result.results, cmd.query, 'search');
-    return formatSearchResultsForLLM(result.results, cmd.query);
-  }
-  if (cmd.type === 'search_arxiv') {
-    showSearchStatus(aiMsgId, 'search', `arXiv: ${cmd.query}`);
-    const result = await doArxivSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return `[arXiv search error: ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, `arXiv: ${cmd.query}`, 'search', result.engine);
-    ctxAutoSaveSearch(result.results, `arXiv: ${cmd.query}`, 'search');
-    return formatSearchResultsForLLM(result.results, `arXiv: ${cmd.query}`);
-  }
-  if (cmd.type === 'search_scholar') {
-    showSearchStatus(aiMsgId, 'search', `Scholar: ${cmd.query}`);
-    const result = await doScholarSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return `[Scholar search error: ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, `Scholar: ${cmd.query}`, 'search', result.engine);
-    ctxAutoSaveSearch(result.results, `Scholar: ${cmd.query}`, 'search');
-    return formatSearchResultsForLLM(result.results, `Scholar: ${cmd.query}`);
-  }
-  if (cmd.type === 'search_github') {
-    showSearchStatus(aiMsgId, 'search', `GitHub: ${cmd.query}`);
-    const result = await doGithubSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return `[GitHub search error: ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, `GitHub: ${cmd.query}`, 'search', result.engine);
-    ctxAutoSaveSearch(result.results, `GitHub: ${cmd.query}`, 'search');
-    return formatSearchResultsForLLM(result.results, `GitHub: ${cmd.query}`);
-  }
-  if (cmd.type === 'search_pubmed') {
-    showSearchStatus(aiMsgId, 'search', `PubMed: ${cmd.query}`);
-    const result = await doPubMedSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return `[PubMed search error: ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, `PubMed: ${cmd.query}`, 'search', result.engine);
-    ctxAutoSaveSearch(result.results, `PubMed: ${cmd.query}`, 'search');
-    return formatSearchResultsForLLM(result.results, `PubMed: ${cmd.query}`);
-  }
-  if (cmd.type === 'search_stackexchange') {
-    showSearchStatus(aiMsgId, 'search', `Stack Overflow: ${cmd.query}`);
-    const result = await doStackExchangeSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return `[Stack Exchange search error: ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, `Stack Overflow: ${cmd.query}`, 'search', result.engine);
-    ctxAutoSaveSearch(result.results, `Stack Overflow: ${cmd.query}`, 'search');
-    return formatSearchResultsForLLM(result.results, `Stack Overflow: ${cmd.query}`);
-  }
-  if (cmd.type === 'search_wikipedia') {
-    showSearchStatus(aiMsgId, 'search', `Wikipedia: ${cmd.query}`);
-    const result = await doWikipediaSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return `[Wikipedia search error: ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, `Wikipedia: ${cmd.query}`, 'search', result.engine);
-    ctxAutoSaveSearch(result.results, `Wikipedia: ${cmd.query}`, 'search');
-    return formatSearchResultsForLLM(result.results, `Wikipedia: ${cmd.query}`);
-  }
-  if (cmd.type === 'search_hackernews') {
-    showSearchStatus(aiMsgId, 'search', `Hacker News: ${cmd.query}`);
-    const result = await doHackerNewsSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return `[Hacker News search error: ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, `Hacker News: ${cmd.query}`, 'search', result.engine);
-    ctxAutoSaveSearch(result.results, `Hacker News: ${cmd.query}`, 'search');
-    return formatSearchResultsForLLM(result.results, `Hacker News: ${cmd.query}`);
-  }
-  if (cmd.type === 'search_google') {
-    showSearchStatus(aiMsgId, 'search', `Google: ${cmd.query}`);
-    const result = await doGoogleSearch(cmd.query, undefined, cmdSignal);
-    if (result.error) return `[Google search error (${result.engine || '?'}): ${result.error}]`;
-    appendSearchResultsCard(aiMsgId, result.results, `Google: ${cmd.query}`, 'search', result.engine, result.fallback ? result.fallbackReason : null);
-    ctxAutoSaveSearch(result.results, `Google: ${cmd.query}`, 'search');
-    return formatSearchResultsForLLM(result.results, `Google: ${cmd.query}`);
-  }
+  const searchSpec = SEARCH_TOOLS[cmd.type];
+  if (searchSpec) return runSearchTool(searchSpec, cmd, idx, aiMsgId, cmdSignal);
   if (cmd.type === 'fetch') {
     showSearchStatus(aiMsgId, 'fetch', cmd.url);
     const result = await fetchWebPage(cmd.url, cmdSignal);
@@ -249,6 +228,20 @@ async function executeSingleCommand(cmd, idx, aiMsgId, cmdSignal) {
     appendCodeResultCard(aiMsgId, cmd.code, result, 'javascript');
     return formatJsResultForLLM(result);
   }
+  if (cmd.type === 'memory_write') {
+    if (typeof memExecWrite !== 'function') return '[memory_write 不可用: memory.js 未加载]';
+    if (typeof memEnabled === 'function' && !memEnabled()) return '[长期记忆已被用户关闭，本次写入未生效]';
+    const out = await memExecWrite(cmd.content, cmd.memId, cmdSignal);
+    appendMemoryCard(aiMsgId, 'write', cmd.content, out);
+    return out;
+  }
+  if (cmd.type === 'memory_delete') {
+    if (typeof memExecDelete !== 'function') return '[memory_delete 不可用: memory.js 未加载]';
+    if (typeof memEnabled === 'function' && !memEnabled()) return '[长期记忆已被用户关闭，本次删除未生效]';
+    const out = await memExecDelete(cmd.id);
+    appendMemoryCard(aiMsgId, 'delete', cmd.id, out);
+    return out;
+  }
   if (cmd.type === 'ctx_delete') {
     const conv = getActiveConv();
     if (conv) {
@@ -279,7 +272,7 @@ function showSearchStatus(aiMsgId, type, detail) {
   div.className = 'search-status';
   div.innerHTML = `<div class="search-spinner"></div>${icon} ${label}: "${escHtml(detail)}"...`;
   contentEl.appendChild(div);
-  $('chatArea').scrollTop = $('chatArea').scrollHeight;
+  scrollChatToBottom();
 }
 
 function hideSearchStatus(aiMsgId) {
@@ -311,13 +304,17 @@ function appendSearchResultsCard(aiMsgId, results, query, type, engine, fallback
     const color = engineColors[engine] || prefixColor || 'var(--accent)';
     engineTag = `<span style="font-size:.65rem;padding:1px 6px;border-radius:4px;background:${color}22;color:${color};border:1px solid ${color}44;margin-left:6px;font-weight:600">${escHtml(engine)}</span>`;
     if (fallbackInfo) {
-      engineTag += `<span style="font-size:.6rem;color:var(--warn);margin-left:4px" title="${escHtml(fallbackInfo)}">⚠️ fallback</span>`;
+      engineTag += `<span style="font-size:.6rem;color:var(--warn);margin-left:4px" title="${escAttr(fallbackInfo)}">⚠️ fallback</span>`;
     }
   }
   let html = `<div class="search-results-header">🔍 搜索结果: "${escHtml(query)}" (${results.length}条)${engineTag} <button class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:.65rem" onclick="ctxSaveSearchById('${saveId}')">📚 收藏</button></div>`;
   for (const r of results.slice(0, 5)) {
     html += `<div class="search-result-item">`;
-    if (r.link) html += `<a href="${escHtml(r.link)}" target="_blank">${escHtml(r.title)}</a>`;
+    /* link 来自第三方搜索接口，是纯外部输入：属性位置必须用 escAttr（escHtml 不转义
+       引号，含双引号的值能突破属性边界），协议还要过白名单挡掉 javascript:。
+       安全性校验不通过时降级为纯文本标题，不给出可点链接。 */
+    const safeLink = (typeof safeUrl === 'function') ? safeUrl(r.link) : r.link;
+    if (safeLink) html += `<a href="${escAttr(safeLink)}" target="_blank" rel="noopener noreferrer">${escHtml(r.title)}</a>`;
     else html += `<strong>${escHtml(r.title)}</strong>`;
     if (r.source) html += `<span class="source-tag">${escHtml(r.source)}</span>`;
     if (r.snippet) html += `<div class="snippet">${escHtml(r.snippet)}</div>`;
@@ -325,7 +322,7 @@ function appendSearchResultsCard(aiMsgId, results, query, type, engine, fallback
   }
   card.innerHTML = html;
   contentEl.appendChild(card);
-  $('chatArea').scrollTop = $('chatArea').scrollHeight;
+  scrollChatToBottom();
 }
 
 function ctxSaveSearchById(saveId) {
@@ -341,10 +338,10 @@ function appendFetchResultCard(aiMsgId, url, content) {
   const saveId = uid();
   window['_ctxFetch_' + saveId] = { url, content: content || '' };
   card.innerHTML = `<div class="search-results-header">🌐 已抓取网页 <button class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:.65rem" onclick="ctxSaveFetchById('${saveId}')">📚 收藏</button></div>
-    <div class="search-result-item"><a href="${escHtml(url)}" target="_blank">${escHtml(url)}</a>
+    <div class="search-result-item"><a href="${escAttr(safeUrl(url))}" target="_blank" rel="noopener noreferrer">${escHtml(url)}</a>
     <div class="snippet">网页内容已提取并发送给模型分析</div></div>`;
   contentEl.appendChild(card);
-  $('chatArea').scrollTop = $('chatArea').scrollHeight;
+  scrollChatToBottom();
 }
 
 function ctxSaveFetchById(saveId) {
@@ -371,7 +368,7 @@ function appendCtxSearchCard(aiMsgId, query, hits) {
   }
   card.innerHTML = html;
   contentEl.appendChild(card);
-  $('chatArea').scrollTop = $('chatArea').scrollHeight;
+  scrollChatToBottom();
 }
 
 // ── 自定义 HTTP 工具结果卡片 ──
@@ -387,7 +384,29 @@ function appendCustomToolCard(aiMsgId, tool, args, output) {
     <div class="search-result-item">${argsDesc ? `<strong>${escHtml(argsDesc)}</strong>` : ''}
       <div class="snippet" style="white-space:pre-wrap">${escHtml(preview)}</div></div>`;
   contentEl.appendChild(card);
-  $('chatArea').scrollTop = $('chatArea').scrollHeight;
+  scrollChatToBottom();
+}
+
+/* ── 长期记忆读写卡片 ──
+   记忆是背后悄悄发生的写操作，用户必须看得见改了什么，
+   所以每次 memory_write / memory_delete 都在消息里留一条可点开管理的痕迹。 */
+function appendMemoryCard(aiMsgId, action, detail, output) {
+  const contentEl = document.getElementById('msg-content-' + aiMsgId);
+  if (!contentEl) return;
+  const isZh = STATE.lang !== 'en';
+  const card = document.createElement('div');
+  card.className = 'search-results-card';
+  const icon = action === 'delete' ? '🗑' : '🧠';
+  const title = action === 'delete'
+    ? (isZh ? '已删除一条长期记忆' : 'Deleted a memory entry')
+    : (isZh ? '已更新长期记忆' : 'Long-term memory updated');
+  card.innerHTML = `<div class="search-results-header">${icon} ${title}
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto;font-size:.65rem"
+        onclick="showMemoryModal()">${isZh ? '管理' : 'Manage'}</button></div>
+    <div class="search-result-item"><div class="snippet">${escHtml(String(detail || '').slice(0, 300))}</div>
+      <div class="snippet" style="color:var(--text3)">${escHtml(String(output || '').slice(0, 200))}</div></div>`;
+  contentEl.appendChild(card);
+  scrollChatToBottom();
 }
 
 /* ── 代码执行结果卡片（stdout / stderr / matplotlib 图表回显） ──
@@ -431,7 +450,7 @@ function appendCodeResultCard(aiMsgId, code, result, lang) {
   _codeResultCards[aiMsgId].push(html);
   if (!contentEl) return;
   contentEl.appendChild(card);
-  $('chatArea').scrollTop = $('chatArea').scrollHeight;
+  scrollChatToBottom();
 }
 
 // renderChat() 重绘后把本会话内已产生的代码结果卡片补回消息气泡

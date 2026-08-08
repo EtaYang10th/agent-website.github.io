@@ -46,7 +46,60 @@ function getConfig() {
 function joinUrl(base, path) { return base.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, ''); }
 function headers(key) { return { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' }; }
 
-// ── Toast 通知 ──
+/* ── 滚动到底 ──
+   只在用户本来就贴着底部时才自动跟随。生成期间无条件置底会把主动上翻查看前文的
+   用户每帧拽回去，等于锁死滚动条。阈值与 debug.js 的日志面板保持一致。 */
+function scrollChatToBottom(force) {
+  const el = $('chatArea');
+  if (!el) return;
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  if (force || atBottom) el.scrollTop = el.scrollHeight;
+}
+
+/* ── HTML 属性值转义 ──
+   escHtml 走 textContent→innerHTML，按 HTML 序列化规范只转义 & < >，
+   引号原样保留。放进 title="..." / href="..." 这类属性里时，取值一旦含双引号
+   就能突破属性边界（搜索结果的 link/title、模型给的工具参数都是外部输入）。
+   属性位置必须用这个函数。 */
+function escAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* 只允许安全协议的 URL 进 href。javascript: / data: 一律拦掉，
+   相对链接与锚点保持原样放行。返回空串表示调用方应降级为纯文本。 */
+function safeUrl(u) {
+  const s = String(u == null ? '' : u).trim();
+  if (!s) return '';
+  // 去掉控制字符后再判协议，防 "java\tscript:" 这类绕过
+  const probe = s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').toLowerCase();
+  if (/^(?:javascript|data|vbscript|file):/.test(probe)) return '';
+  return s;
+}
+
+/* ── 文件下载 ──
+   曾有四处各写一遍这段，且都犯同一个错：<a> 没插进文档，且 click() 后同步
+   revokeObjectURL。下载在部分浏览器是异步取 blob 的，URL 已吊销会导致
+   下载静默失败或存出 0 字节。这里统一走"插入 → 点击 → 移除 → 延迟吊销"。
+   文件名同时做非法字符清洗，否则标题带 / 的对话导不出来。 */
+function downloadBlob(content, filename, mime) {
+  const blob = (content instanceof Blob) ? content : new Blob([content], { type: mime || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = String(filename || 'download').replace(/[\\/:*?"<>|]/g, '_');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// 导出 JSON 的快捷方式（记忆 / 档案 / 自定义工具 / 全部对话都用它）
+function downloadJson(obj, filename) {
+  downloadBlob(JSON.stringify(obj, null, 2), filename, 'application/json');
+}
+
 function toast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = 'toast toast-' + type;
@@ -266,9 +319,6 @@ function cfgApplyGroups(saved) {
   cfgSyncGroupBadges();
 }
 
-/* ── ⓘ 详情展开 ──
-   长说明不再常驻版面，但绝不删除：一句话要点留在界面上，完整说明（含代码执行的
-   安全边界）放在这里，点 ⓘ 展开、悬浮看 title，两条路径都能拿到全文。 */
 // 供外部调用：程序化改写某个分组里的字段时把它展开，避免值悄悄变了用户看不见
 function cfgOpenGroup(id) {
   const el = $(id);
@@ -278,6 +328,9 @@ function cfgOpenGroup(id) {
   saveConfig();
 }
 
+/* ── ⓘ 详情展开 ──
+   长说明不再常驻版面，但绝不删除：一句话要点留在界面上，完整说明（含代码执行的
+   安全边界）放在这里，点 ⓘ 展开、悬浮看 title，两条路径都能拿到全文。 */
 function cfgToggleInfo(detailId, btn) {
   const box = $(detailId);
   if (!box) return;
@@ -286,7 +339,6 @@ function cfgToggleInfo(detailId, btn) {
   if (btn) btn.setAttribute('aria-expanded', show ? 'true' : 'false');
 }
 
-// ── 主题切换 ──
 function applyTheme(theme) {
   STATE.theme = theme;
   document.documentElement.setAttribute('data-theme', theme);
@@ -300,7 +352,6 @@ function applyTheme(theme) {
   saveConfig();
 }
 
-// ── 语言切换 ──
 function applyLang(lang) {
   STATE.lang = lang;
   document.documentElement.setAttribute('lang', lang === 'zh' ? 'zh-CN' : 'en');
@@ -308,7 +359,6 @@ function applyLang(lang) {
   saveConfig();
 }
 
-// ── i18n 翻译表 ──
 const I18N = {
   zh: {
     newConv: '新对话', convList: '对话列表', baseUrl: 'Base URL', apiKey: 'API Key',
@@ -346,6 +396,8 @@ const I18N = {
     arenaTitle: '模型竞技场（多模型并排对比）',
     promptLibTitle: 'Prompt 模板库',
     micTitle: '语音输入',
+    profileTitle: '个人信息（用户自己填写）',
+    memoryTitle: '长期记忆（Agent 自行维护，可编辑）',
   },
   en: {
     newConv: 'New Chat', convList: 'Conversations', baseUrl: 'Base URL', apiKey: 'API Key',
@@ -383,6 +435,8 @@ const I18N = {
     arenaTitle: 'Model Arena (compare models side by side)',
     promptLibTitle: 'Prompt Library',
     micTitle: 'Voice input',
+    profileTitle: 'Personal info (you fill this in)',
+    memoryTitle: 'Long-term memory (agent-maintained, editable)',
   },
 };
 
@@ -500,6 +554,8 @@ function applyI18n() {
   const gsInput = $('gsInput'); if (gsInput) gsInput.placeholder = t('gsPlaceholder');
   const arenaBtn = $('arenaBtn'); if (arenaBtn) arenaBtn.title = t('arenaTitle');
   const plBtn = $('promptLibBtn'); if (plBtn) plBtn.title = t('promptLibTitle');
+  const profBtn = $('profileBtn'); if (profBtn) profBtn.title = t('profileTitle');
+  const memBtn = $('memoryBtn'); if (memBtn) memBtn.title = t('memoryTitle');
   const micBtn = $('micBtn'); if (micBtn && typeof voiceSyncMicBtn === 'function') voiceSyncMicBtn();
   else if (micBtn) micBtn.title = t('micTitle');
 }

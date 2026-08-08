@@ -317,16 +317,6 @@ async function doGoogleSearch(query, numResults = 8, parentSignal) {
   }
 }
 
-function parseGoogleResults(data, max) {
-  const results = [];
-  const items = data?.items || [];
-  for (const item of items) {
-    if (results.length >= max) break;
-    results.push({ title: item.title || '', link: item.link || '', snippet: item.snippet || '', source: 'Google' });
-  }
-  return { error: null, results };
-}
-
 function parseGithubResults(data, max) {
   const results = [];
   const items = data?.items || [];

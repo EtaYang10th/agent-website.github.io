@@ -2,6 +2,25 @@
    ETA (Edge Thin Agent) — doGenerate Main Loop
    ============================================================ */
 
+/* 估算一条消息占多少「上下文字符」，用于决定是否触发 LLM 总结压缩。
+   关键：图片走 image_url.url（base64 dataUrl，动辄几 MB），既不能计入字符数
+   ——否则一张图就顶穿 120k 阈值、让每一轮都白跑一次压缩——也不该为了数长度
+   把它序列化一遍。这里按固定权重折算，只累加真正的文本。 */
+const IMAGE_CHAR_WEIGHT = 1000;
+
+function estimateMsgChars(m) {
+  const c = m && m.content;
+  if (typeof c === 'string') return c.length;
+  if (!Array.isArray(c)) return c ? String(c).length : 0;
+  let n = 0;
+  for (const part of c) {
+    if (!part) continue;
+    if (part.type === 'image_url') n += IMAGE_CHAR_WEIGHT;
+    else if (typeof part.text === 'string') n += part.text.length;
+  }
+  return n;
+}
+
 async function doGenerate(conv, userMsgId) {
   const cfg = getConfig();
   STATE.generating = true;
@@ -50,7 +69,7 @@ async function doGenerate(conv, userMsgId) {
     for (const em of convoTail) messages.push(em);
     if (typeof timelineRoundStart === 'function') timelineRoundStart(aiMsgId, searchRound, '');
 
-    const totalMsgChars = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0);
+    const totalMsgChars = messages.reduce((s, m) => s + estimateMsgChars(m), 0);
     console.log(`[Agent 循环] 第 ${searchRound} 轮, messages: ${messages.length} 条, 总字符: ${totalMsgChars}, convoTail: ${convoTail.length} 条`);
     if (searchRound > 0) {
       showSearchStatus(aiMsgId, 'search', `第 ${searchRound + 1} 轮分析中 (上下文 ${Math.round(totalMsgChars/1000)}k 字符)...`);
@@ -112,10 +131,12 @@ async function doGenerate(conv, userMsgId) {
         if (STATE.abortCtrl) STATE.abortCtrl.abort();
       }, API_CALL_TIMEOUT);
 
-      console.log(`[Agent 循环] 第 ${searchRound} 轮: 发送 API 请求, body 大小: ${JSON.stringify(body).length} 字符`);
+      // 只序列化一次：body 含图片 base64 时可达数 MB，多序列化一次纯属浪费
+      const payload = JSON.stringify(body);
+      console.log(`[Agent 循环] 第 ${searchRound} 轮: 发送 API 请求, body 大小: ${payload.length} 字符`);
       const resp = await fetch(url, {
         method: 'POST', headers: headers(cfg.apiKey),
-        body: JSON.stringify(body), signal: STATE.abortCtrl.signal,
+        body: payload, signal: STATE.abortCtrl.signal,
       });
 
       clearTimeout(apiTimeoutId);
@@ -137,7 +158,10 @@ async function doGenerate(conv, userMsgId) {
       console.log(`[Agent 循环] 第 ${searchRound} 轮: 流式读取完成, content=${newContent.length}字符, tool_calls=${rawToolCalls.length}, finish=${streamResult.finishReason}`);
 
       // 无工具调用（或所有工具类别都关闭）→ 模型已给出最终回答，退出循环
-      if (!rawToolCalls.length || !(isSearchToolsEnabled() || isCodeToolsEnabled())) {
+      // 注：记忆与自定义 HTTP 工具不受联网/代码开关管辖，故用 isAnyToolsEnabled 统一判断
+      const anyTools = (typeof isAnyToolsEnabled === 'function')
+        ? isAnyToolsEnabled() : (isSearchToolsEnabled() || isCodeToolsEnabled());
+      if (!rawToolCalls.length || !anyTools) {
         console.log(`[Agent 循环] 第 ${searchRound} 轮: 无工具调用或工具未启用，退出循环`);
         if (typeof timelineRoundEnd === 'function') {
           timelineRoundEnd(aiMsgId, searchRound, { chars: newContent.length, note: STATE.lang === 'en' ? 'final answer' : '直接作答' });
@@ -164,7 +188,8 @@ async function doGenerate(conv, userMsgId) {
       const dedupedCmds = [];
       const dupToolMsgs = [];
       for (const cmd of agentCmds) {
-        const key = `${cmd.type}:${cmd.query || cmd.url || cmd.id || cmd.code || ''}`;
+        // cmd.content 是 memory_write 的主字段，漏掉它会让同一轮的多次写入被误判为重复
+        const key = `${cmd.type}:${cmd.query || cmd.url || cmd.id || cmd.code || cmd.content || ''}`;
         if (globalSeenCmds.has(key)) {
           console.warn(`[Agent 循环] 跳过重复工具调用: ${key}`);
           dupToolMsgs.push({ role: 'tool', tool_call_id: cmd.toolCallId, name: cmd.toolName,
@@ -219,13 +244,16 @@ async function doGenerate(conv, userMsgId) {
       }
       if (typeof timelinePlanAdvance === 'function') timelinePlanAdvance(aiMsgId, searchRound);
 
-      // 检测连续空结果，超过 3 轮强制退出
+      /* 连续 3 轮拿不到有效结果：注入一次强制作答提示后继续循环（不是退出——
+         模型下一轮通常就直接作答了，硬 break 会丢掉这个机会）。
+         提示只注入一次：计数归零，否则后续每轮都会重复推同一条，白烧 token。 */
       const hasUseful = roundToolMsgs.some(m => m.content && m.content.length > 200 && !m.content.startsWith('['));
       if (!hasUseful) {
         consecutiveEmptyRounds++;
         if (consecutiveEmptyRounds >= 3) {
-          console.warn(`[Agent 循环] 连续 ${consecutiveEmptyRounds} 轮无有效结果，强制退出`);
+          console.warn(`[Agent 循环] 连续 ${consecutiveEmptyRounds} 轮无有效结果，注入强制作答提示`);
           convoTail.push({ role: 'user', content: '[系统强制提示] 已连续多轮搜索无有效结果。请立即停止所有工具调用，直接基于已有信息回答用户问题。' });
+          consecutiveEmptyRounds = 0;
           searchRound++;
           continue;
         }

@@ -36,7 +36,6 @@ function processFile(file) {
   reader.readAsText(file);
 }
 
-// ── PDF 文本提取 ──
 async function extractPdfText(file) {
   toast('正在解析 PDF...', 'info');
   try {
@@ -62,7 +61,6 @@ async function extractPdfText(file) {
   }
 }
 
-// ── DOCX 文本提取 ──
 async function extractDocxText(file) {
   toast('正在解析 Word 文档...', 'info');
   try {
@@ -80,7 +78,6 @@ async function extractDocxText(file) {
   }
 }
 
-// ── PPTX 文本提取 ──
 async function extractPptxText(file) {
   toast('正在解析 PPT...', 'info');
   try {
@@ -170,7 +167,6 @@ async function extractPptxText(file) {
   }
 }
 
-// ── XLSX 文本提取 ──
 async function extractXlsxText(file) {
   toast('正在解析 Excel...', 'info');
   try {
