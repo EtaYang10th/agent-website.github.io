@@ -13,8 +13,10 @@
        —— 流式响应经不起缓存，且回放旧回答会误导用户
    ============================================================ */
 
-// 改动预缓存清单后必须递增版本号，否则老 SW 会一直用旧的文件列表
-const SW_VERSION = 'eta-v2';
+/* 改动预缓存清单后必须递增版本号，否则老 SW 会一直用旧的文件列表。
+   v3：index.html 的 CDN 资源加了 SRI。旧版本缓存里存的是 opaque 响应，
+   而 opaque 响应过不了 SRI 校验，必须靠换版本号把它们整批淘汰掉。 */
+const SW_VERSION = 'eta-v3';
 const LOCAL_CACHE = SW_VERSION + '-local';
 const CDN_CACHE = SW_VERSION + '-cdn';
 
@@ -116,11 +118,14 @@ async function staleWhileRevalidate(req, cacheName) {
 async function cacheFirst(req, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(req);
-  if (cached) return cached;
+  // opaque 响应（type:'opaque'）无法通过 SRI 校验，命中也必须丢弃重新联网取，
+  // 否则带 integrity 的 <script> 会被浏览器直接拒绝执行 → 页面白屏
+  if (cached && cached.type !== 'opaque') return cached;
   try {
     const resp = await fetch(req);
-    // 跨域库多为 opaque 响应（type: 'cors' 才有 ok），两种都存，离线才用得上
-    if (resp && (resp.ok || resp.type === 'opaque')) cache.put(req, resp.clone()).catch(() => {});
+    /* index.html 里的 CDN 资源都带 crossorigin="anonymous"，响应是可校验的
+       type:'cors'，只缓存这一种。opaque 响应存了也用不了（见上），直接不存。 */
+    if (resp && resp.ok && resp.type !== 'opaque') cache.put(req, resp.clone()).catch(() => {});
     return resp;
   } catch (e) {
     return new Response('/* offline: CDN asset unavailable */', {
