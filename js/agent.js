@@ -48,7 +48,7 @@ function getToolDefinitions() {
   });
   const tools = [];
   if (isCodeToolsEnabled()) {
-    tools.push(fn('run_python', 'Run Python code in an in-browser Pyodide (WASM) sandbox and return stdout/stderr/return value. numpy/pandas/matplotlib/scipy/sympy are auto-installed on demand. matplotlib figures are captured and shown to the user automatically (use Agg backend, plt.show() not required). Knowledge-buffer file entries are mounted read-only under /data/, so open("/data/<name>") works. Use this for exact arithmetic, data processing and plotting instead of computing by hand.',
+    tools.push(fn('run_python', 'Run Python code in an in-browser Pyodide (WASM) sandbox and return stdout/stderr/return value. numpy/pandas/matplotlib/scipy/sympy are auto-installed on demand. matplotlib figures are captured and shown to the user automatically (use Agg backend, plt.show() not required); keep all text inside figures in English/ASCII because only DejaVu Sans is available and CJK renders as empty boxes. Knowledge-buffer file entries are mounted read-only under /data/, so open("/data/<name>") works. Use this for exact arithmetic, data processing and plotting instead of computing by hand.',
       { code: { type: 'string', description: 'Python source code. Use print() to output results.' } }, ['code']));
     tools.push(fn('run_js', 'Run JavaScript in a zero-dependency Web Worker sandbox (no DOM, no network to the host page) and return console output and the returned value. 10s timeout. Best for quick calculations, JSON/string processing and regex checks.',
       { code: { type: 'string', description: 'JavaScript source. Body of an async function; use console.log or return a value.' } }, ['code']));
@@ -141,6 +141,7 @@ function getCodeToolsPrompt() {
 - 涉及数值计算、统计、单位换算、日期推算、大数运算时一律用 run_python 实算，禁止心算或手推，避免算错。
 - 数据处理（CSV / JSON / 表格清洗、聚合、排序）优先 run_python 的 pandas。
 - 需要图表时用 matplotlib 直接画，图片会自动截取并展示给用户，不需要 plt.show()，也不要尝试保存到本地路径。
+- 图表内的文字（标题、轴标签、图例、刻度）必须用英文或 ASCII：沙箱里的 matplotlib 只有 DejaVu Sans 字体，中文会渲染成空心方框。图旁边的文字说明照常用中文写在回复正文里。
 - 知识库中 type 为文件的条目会挂载到 /data/ 目录，用 open('/data/文件名') 或 pandas.read_csv('/data/文件名') 读取；先看知识库索引里的文件名。
 - 用 print() 输出结果，否则你看不到中间过程；错误信息会原样回传，可据此修正后重试。
 - 轻量的字符串处理、正则验证、JSON 变换可以用 run_js，更快；重活交给 run_python。
@@ -153,6 +154,7 @@ Principles:
 - For any arithmetic, statistics, unit conversion, date math or big-number work, compute it with run_python instead of doing mental math; this avoids calculation errors.
 - For data wrangling (CSV / JSON / table cleaning, aggregation, sorting) prefer pandas via run_python.
 - To produce charts just use matplotlib; figures are captured and displayed to the user automatically. plt.show() is unnecessary and do not try to save to a local path.
+- Keep all in-figure text (titles, axis labels, legends, ticks) in English/ASCII: the sandbox matplotlib only ships DejaVu Sans, so CJK characters render as empty boxes. Write any Chinese explanation in your reply text instead.
 - Knowledge-buffer file entries are mounted under /data/; read them with open('/data/<name>') or pandas.read_csv('/data/<name>'). Check the buffer index for exact names.
 - Always print() results, otherwise you cannot see them. Error output is returned verbatim so you can fix and retry.
 - Use run_js for light string/regex/JSON work (faster); use run_python for anything heavy.

@@ -169,12 +169,57 @@ function pyMountCtxFiles(py) {
   return mounted;
 }
 
-/* 执行前置：强制 matplotlib 用 Agg backend（无 DOM 依赖，可 savefig 到内存） */
+/* 执行前置：
+   · 强制 matplotlib 用 Agg backend（无 DOM 依赖，可 savefig 到内存）
+   · 掐掉字形缺失警告。Pyodide 的 matplotlib 只带 DejaVu Sans，图里出现中日韩
+     字符时每个字都会 warn 一次「Glyph xxx missing from current font」，一张图
+     刷出几十行，把 stderr 彻底淹掉。警告本身无法通过换字体消除（装一套 CJK 字体
+     要额外下载十几 MB），所以这里直接静音，并在工具说明里要求模型给图表用
+     ASCII 标签——那才是根治，否则中文标签渲染出来是一排方框。
+   · font_manager 找不到字体时也会 log 一堆 findfont 警告，一并降级。 */
 const PY_PRELUDE = [
   'import os, sys',
   "os.environ['MPLBACKEND'] = 'AGG'",
   "sys.path.insert(0, '/data') if '/data' not in sys.path else None",
+  'import warnings, logging',
+  "warnings.filterwarnings('ignore', message='.*missing from current font.*')",
+  "warnings.filterwarnings('ignore', message='.*Glyph .* missing.*')",
+  "warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')",
+  "logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)",
+  "logging.getLogger('matplotlib').setLevel(logging.ERROR)",
 ].join('\n');
+
+/* 兜底过滤：模型自己调 warnings.resetwarnings() 或用 -W 之类手段重新打开时，
+   前置静音会失效，所以拿到 stderr 后再按行滤一遍。
+   只滤已知无害的噪声行，真正的 Traceback / Error / 用户自己 print 到 stderr
+   的内容一律保留——否则代码出错时用户和模型都看不到原因。 */
+const PY_NOISE_PATTERNS = [
+  /Glyph \d+ .*missing from current font/i,
+  /findfont: .*(not found|falling back)/i,
+  /UserWarning: Matplotlib is currently using agg/i,
+  /^\s*(warnings\.warn|self\._warn_if_gui_out_of_main_thread)\(/,
+];
+
+function pyFilterStderr(text) {
+  const src = String(text == null ? '' : text);
+  if (!src) return '';
+  const lines = src.split('\n');
+  const kept = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (PY_NOISE_PATTERNS.some(re => re.test(line))) {
+      /* warnings 的输出是两行一组：第一行是 "<exec>:71: UserWarning: ..."，
+         紧跟一行源码回显（常见是缩进的代码片段）。命中噪声时把紧随其后的
+         那行源码回显也吃掉，否则会剩下一堆没有上文的孤立代码行。 */
+      const next = lines[i + 1];
+      if (next !== undefined && next.trim() && /^\s/.test(next) && !/error|traceback/i.test(next)) i++;
+      continue;
+    }
+    kept.push(line);
+  }
+  // 全是噪声时返回空串，UI 与 LLM 都不会看到 stderr 区块
+  return kept.join('\n').trim() ? kept.join('\n') : '';
+}
 
 /* 执行后置：遍历所有 figure 存成 base64 PNG（比拦截 plt.show 可靠得多） */
 const PY_COLLECT_FIGS = [
@@ -264,7 +309,7 @@ async function _runPythonCodeInner(code, opts) {
     } catch (e) { console.warn('[Pyodide] 收集图表失败:', e.message); }
   }
   out.stdout = stdoutChunks.join('\n');
-  out.stderr = stderrChunks.join('\n');
+  out.stderr = pyFilterStderr(stderrChunks.join('\n'));
   return out;
 }
 
