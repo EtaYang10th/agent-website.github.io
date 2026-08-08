@@ -176,27 +176,57 @@ function pyMountCtxFiles(py) {
      刷出几十行，把 stderr 彻底淹掉。警告本身无法通过换字体消除（装一套 CJK 字体
      要额外下载十几 MB），所以这里直接静音，并在工具说明里要求模型给图表用
      ASCII 标签——那才是根治，否则中文标签渲染出来是一排方框。
-   · font_manager 找不到字体时也会 log 一堆 findfont 警告，一并降级。 */
+   · font_manager 找不到字体时也会 log 一堆 findfont 警告，一并降级。
+   · DeprecationWarning / FutureWarning 一律静音：这类警告讲的是"将来某个版本
+     会变"，在一次性的沙箱执行里既无法处理也无需处理（例如 pandas 提示缺
+     pyarrow——Pyodide 里根本装不上），只会淹掉真正的输出。
+     真正的错误走 Traceback / Exception，不受这里影响。 */
 const PY_PRELUDE = [
   'import os, sys',
   "os.environ['MPLBACKEND'] = 'AGG'",
   "sys.path.insert(0, '/data') if '/data' not in sys.path else None",
   'import warnings, logging',
+  "warnings.filterwarnings('ignore', category=DeprecationWarning)",
+  "warnings.filterwarnings('ignore', category=PendingDeprecationWarning)",
+  "warnings.filterwarnings('ignore', category=FutureWarning)",
+  "warnings.filterwarnings('ignore', category=ImportWarning)",
+  "warnings.filterwarnings('ignore', category=ResourceWarning)",
   "warnings.filterwarnings('ignore', message='.*missing from current font.*')",
   "warnings.filterwarnings('ignore', message='.*Glyph .* missing.*')",
   "warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')",
   "logging.getLogger('matplotlib.font_manager').setLevel(logging.ERROR)",
   "logging.getLogger('matplotlib').setLevel(logging.ERROR)",
+  // 子进程/子解释器场景下 Python 会读这个环境变量，一并设上
+  "os.environ['PYTHONWARNINGS'] = 'ignore::DeprecationWarning,ignore::FutureWarning'",
 ].join('\n');
 
-/* 兜底过滤：模型自己调 warnings.resetwarnings() 或用 -W 之类手段重新打开时，
-   前置静音会失效，所以拿到 stderr 后再按行滤一遍。
-   只滤已知无害的噪声行，真正的 Traceback / Error / 用户自己 print 到 stderr
-   的内容一律保留——否则代码出错时用户和模型都看不到原因。 */
+/* ── stderr 兜底过滤 ──
+   前置静音会在两种情况下失效：模型自己调了 warnings.resetwarnings()，或者
+   警告由 C 扩展直接写 stderr 绕过了 warnings 模块。所以拿到结果后再滤一遍。
+
+   按「警告块」而不是「行」处理。Python 的警告输出是一个块：
+     <exec>:2: DeprecationWarning: 一段可能跨多行的说明文字
+       接一行源码回显（缩进）
+   pandas 的 pyarrow 提示就有 7 行正文。只匹配首行会留下一地残骸，所以这里
+   识别到警告首行后，把整块（后续所有缩进行 / 空行 / 非新块的续行）一起吃掉。
+
+   保留原则：只丢弃 WARNING_HEAD 认得的警告类别。Traceback、各类 Error、
+   以及用户自己写进 stderr 的内容一律保留——代码真出错时必须看得到原因。 */
+
+// 警告块首行：形如 "<exec>:2: DeprecationWarning: ..." 或 "/path/x.py:10: UserWarning: ..."
+const PY_WARNING_HEAD = /^\s*\S*:\d+:\s*(\w*(?:Warning|Deprecated))\b/;
+
+// 这些类别的警告在一次性沙箱里对用户和模型都无可操作性，整块丢弃
+const PY_DROP_WARNINGS = new Set([
+  'DeprecationWarning', 'PendingDeprecationWarning', 'FutureWarning',
+  'ImportWarning', 'ResourceWarning', 'UserWarning', 'RuntimeWarning',
+  'SyntaxWarning', 'BytesWarning', 'EncodingWarning', 'Warning',
+]);
+
+// 不走 warnings 模块、直接打到 stderr 的已知噪声（逐行匹配即可）
 const PY_NOISE_PATTERNS = [
   /Glyph \d+ .*missing from current font/i,
   /findfont: .*(not found|falling back)/i,
-  /UserWarning: Matplotlib is currently using agg/i,
   /^\s*(warnings\.warn|self\._warn_if_gui_out_of_main_thread)\(/,
 ];
 
@@ -205,20 +235,40 @@ function pyFilterStderr(text) {
   if (!src) return '';
   const lines = src.split('\n');
   const kept = [];
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (PY_NOISE_PATTERNS.some(re => re.test(line))) {
-      /* warnings 的输出是两行一组：第一行是 "<exec>:71: UserWarning: ..."，
-         紧跟一行源码回显（常见是缩进的代码片段）。命中噪声时把紧随其后的
-         那行源码回显也吃掉，否则会剩下一堆没有上文的孤立代码行。 */
-      const next = lines[i + 1];
-      if (next !== undefined && next.trim() && /^\s/.test(next) && !/error|traceback/i.test(next)) i++;
+
+    // 单行噪声
+    if (PY_NOISE_PATTERNS.some(re => re.test(line))) continue;
+
+    const head = PY_WARNING_HEAD.exec(line);
+    if (head && PY_DROP_WARNINGS.has(head[1])) {
+      /* 吞掉整个警告块。Python 警告块的结构是：
+           首行 "<exec>:2: DeprecationWarning: ..."
+           [可能若干行顶格的消息正文——pandas 的 pyarrow 提示就有 6 行]
+           一行缩进的源码回显   ← 这是块的明确终点
+         所以以「首个缩进行」为界收尾，而不是一路顶格吞下去：否则紧跟在警告
+         之后的用户自有 stderr 输出会被误删。另设 20 行上限兜底。 */
+      let j = i + 1;
+      let guard = 0;
+      while (j < lines.length && guard++ < 20) {
+        const nxt = lines[j];
+        // 真问题优先：遇到 Traceback / Error 立刻停手，一个字都不动
+        if (/^\s*(Traceback|\w*(?:Error|Exception)\b)/.test(nxt)) break;
+        if (PY_WARNING_HEAD.test(nxt)) break;   // 下一个警告块，交给外层循环处理
+        if (/^\s+\S/.test(nxt)) { j++; break; } // 缩进的源码回显：吃掉它并结束本块
+        if (nxt.trim() === '') { j++; continue; }
+        j++;                                    // 顶格的消息正文续行
+      }
+      i = j - 1;
       continue;
     }
     kept.push(line);
   }
+
   // 全是噪声时返回空串，UI 与 LLM 都不会看到 stderr 区块
-  return kept.join('\n').trim() ? kept.join('\n') : '';
+  return kept.join('\n').trim() ? kept.join('\n').replace(/\n{3,}/g, '\n\n').trim() : '';
 }
 
 /* 执行后置：遍历所有 figure 存成 base64 PNG（比拦截 plt.show 可靠得多） */
