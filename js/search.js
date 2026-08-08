@@ -1,5 +1,5 @@
 /* ============================================================
-   ETA (Edge Thin Agent) — Search Engines (CORS, Brave, SerpAPI, arXiv, Scholar, GitHub, Web Fetch)
+   ETA (Edge Thin Agent) — Search Engines (CORS, Brave, arXiv, Scholar, GitHub, Web Fetch)
    ============================================================ */
 
 // ── CORS 代理 ──
@@ -9,6 +9,39 @@ const CORS_PROXIES = [
   url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
   url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
 ];
+
+/* ── 直连优先取文本 ──
+   给已确认返回 Access-Control-Allow-Origin 的接口用（维基百科需带 origin=*，
+   PubMed/NCBI 原生就发 ACAO: *）。这类请求没有理由经过第三方 CORS 代理：
+   代理会看到完整 URL（含搜索词），还多一跳延迟和一个故障点。
+
+   直连失败才回退 fetchViaProxy，保证 file:// 打开、或对方临时改动 CORS 策略时
+   功能不至于直接挂掉。file:// 下 origin 是 'null'，多数接口不会放行，
+   所以那种情况直接走代理不浪费一次必然失败的请求。 */
+async function fetchDirectText(url, timeoutMs = 15000, parentSignal) {
+  if (location.protocol !== 'file:') {
+    const ctrl = new AbortController();
+    let onAbort;
+    if (parentSignal) {
+      if (parentSignal.aborted) ctrl.abort();
+      else { onAbort = () => ctrl.abort(); parentSignal.addEventListener('abort', onAbort, { once: true }); }
+    }
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(url, { signal: ctrl.signal });
+      if (r.ok) return await r.text();
+      throw new Error(`HTTP ${r.status}`);
+    } catch (e) {
+      // 用户主动中止不该被当成"直连失败"而触发代理重试
+      if (parentSignal?.aborted) throw e;
+      console.warn(`[Search] 直连失败，回退 CORS 代理: ${e.message}`);
+    } finally {
+      clearTimeout(timer);
+      if (parentSignal && onAbort) parentSignal.removeEventListener('abort', onAbort);
+    }
+  }
+  return fetchViaProxy(url, timeoutMs, parentSignal);
+}
 
 async function fetchViaProxy(url, timeoutMs = 15000, parentSignal) {
   const localCtrl = new AbortController();
@@ -78,11 +111,9 @@ async function doBraveSearch(query, numResults = 8, parentSignal) {
 
 // ── 通用搜索 ──
 async function doWebSearch(query, numResults = 6, parentSignal) {
-  const serpKey = $('cfgSerpApiKey').value.trim();
-  if (serpKey) return doGoogleSearch(query, numResults, parentSignal);
   const braveKey = $('cfgBraveKey').value.trim();
   if (braveKey) return doBraveSearch(query, numResults, parentSignal);
-  return { error: '搜索不可用，请配置 SerpAPI Key 或 Brave Search Key', results: [], engine: 'none' };
+  return { error: '搜索不可用，请配置 Brave Search Key', results: [], engine: 'none' };
 }
 
 // ── arXiv 原生 API 搜索 ──
@@ -122,37 +153,11 @@ function parseArxivSearchResults(xml, max) {
   return { error: null, results };
 }
 
-// ── 学术搜索 ──
+/* ── 学术搜索 ──
+   策略: Semantic Scholar → OpenAlex → CrossRef，三者都免费且无需密钥。
+   原先第一档是 SerpAPI 的 Google Scholar，已移除（密钥会经 CORS 代理泄露）。 */
 async function doScholarSearch(query, numResults = 10, parentSignal) {
-  // 策略: SerpAPI Google Scholar → Semantic Scholar → OpenAlex → CrossRef
-  const serpKey = $('cfgSerpApiKey').value.trim();
-
-  // 1. SerpAPI Google Scholar
-  if (serpKey) {
-    try {
-      const apiUrl = `https://serpapi.com/search.json?engine=google_scholar&q=${encodeURIComponent(query)}&num=${Math.min(numResults, 20)}&api_key=${encodeURIComponent(serpKey)}`;
-      const text = await fetchViaProxy(apiUrl, 20000, parentSignal);
-      const data = JSON.parse(text);
-      if (data.error) throw new Error(data.error);
-      const results = [];
-      for (const item of (data.organic_results || [])) {
-        if (results.length >= numResults) break;
-        const authors = item.publication_info?.authors?.map(a => a.name).join(', ') || '';
-        results.push({
-          title: item.title || '',
-          link: item.link || '',
-          snippet: `${authors}${authors ? ' — ' : ''}${item.snippet || ''}`,
-          source: 'Google Scholar (SerpAPI)',
-        });
-      }
-      if (results.length > 0) return { error: null, results, engine: 'Google Scholar (SerpAPI)' };
-      throw new Error('SerpAPI 返回 0 条结果');
-    } catch(e) {
-      console.warn('SerpAPI Scholar 异常，尝试 fallback:', e.message);
-    }
-  }
-
-  // 2. Semantic Scholar（免费，无需 key，覆盖面广）
+  // 1. Semantic Scholar（免费，无需 key，覆盖面广）
   try {
     const ssResult = await doSemanticScholarSearch(query, numResults, parentSignal);
     if (!ssResult.error && ssResult.results.length > 0) return ssResult;
@@ -161,7 +166,7 @@ async function doScholarSearch(query, numResults = 10, parentSignal) {
     console.warn('Semantic Scholar 异常:', e.message);
   }
 
-  // 3. OpenAlex（完全免费，无反爬，覆盖 2.5 亿+ 论文）
+  // 2. OpenAlex（完全免费，无反爬，覆盖 2.5 亿+ 论文）
   try {
     const oaResult = await doOpenAlexSearch(query, numResults, parentSignal);
     if (!oaResult.error && oaResult.results.length > 0) return oaResult;
@@ -170,7 +175,7 @@ async function doScholarSearch(query, numResults = 10, parentSignal) {
     console.warn('OpenAlex 异常:', e.message);
   }
 
-  // 4. CrossRef（完全免费，覆盖 DOI 文献）
+  // 3. CrossRef（完全免费，覆盖 DOI 文献）
   try {
     return await doCrossRefSearch(query, numResults, parentSignal);
   } catch(e) {
@@ -213,7 +218,7 @@ function parseScholarResults(data, max) {
 async function doOpenAlexSearch(query, numResults = 10, parentSignal) {
   const apiUrl = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&per_page=${numResults}&sort=relevance_score:desc&select=id,title,authorships,publication_year,doi,cited_by_count,primary_location,abstract_inverted_index`;
   try {
-    const text = await fetchViaProxy(apiUrl, 15000, parentSignal);
+    const text = await fetchDirectText(apiUrl, 15000, parentSignal);
     const data = JSON.parse(text);
     const results = [];
     for (const work of (data.results || [])) {
@@ -251,7 +256,7 @@ function invertedIndexToText(invertedIndex) {
 async function doCrossRefSearch(query, numResults = 10, parentSignal) {
   const apiUrl = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=${numResults}&sort=relevance&order=desc&select=DOI,title,author,published-print,published-online,container-title,abstract,URL`;
   try {
-    const text = await fetchViaProxy(apiUrl, 15000, parentSignal);
+    const text = await fetchDirectText(apiUrl, 15000, parentSignal);
     const data = JSON.parse(text);
     const results = [];
     for (const item of (data.message?.items || [])) {
@@ -280,7 +285,7 @@ async function doCrossRefSearch(query, numResults = 10, parentSignal) {
 async function doGithubSearch(query, numResults = 10, parentSignal) {
   const apiUrl = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=${numResults}`;
   try {
-    const text = await fetchViaProxy(apiUrl, 15000, parentSignal);
+    const text = await fetchDirectText(apiUrl, 15000, parentSignal);
     const data = JSON.parse(text);
     const res = parseGithubResults(data, numResults);
     res.engine = 'GitHub API';
@@ -290,31 +295,14 @@ async function doGithubSearch(query, numResults = 10, parentSignal) {
   }
 }
 
-// ── SerpAPI Google 搜索 ──
+/* ── 通用网页搜索 ──
+   原先走 SerpAPI，已彻底移除：SerpAPI 不返回 CORS 头，纯前端只能把
+   「带 api_key 的完整 URL」交给第三方 CORS 代理转发，密钥必然落进代理的
+   访问日志。Brave 把密钥放在 X-Subscription-Token 请求头且支持直连，
+   不经任何代理，因此现在统一走 Brave。
+   函数名保留，调用方（agent-commands.js 的 SEARCH_TOOLS）无需改动。 */
 async function doGoogleSearch(query, numResults = 8, parentSignal) {
-  const serpKey = $('cfgSerpApiKey').value.trim();
-  if (!serpKey) {
-    return doBraveSearch(query, numResults, parentSignal);
-  }
-  const apiUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(query)}&num=${Math.min(numResults, 10)}&api_key=${encodeURIComponent(serpKey)}`;
-  try {
-    const text = await fetchViaProxy(apiUrl, 20000, parentSignal);
-    const data = JSON.parse(text);
-    const results = [];
-    for (const item of (data.organic_results || [])) {
-      if (results.length >= numResults) break;
-      results.push({
-        title: item.title || '',
-        link: item.link || '',
-        snippet: item.snippet || '',
-        source: 'Google (SerpAPI)',
-      });
-    }
-    return { error: null, results, engine: 'Google (SerpAPI)' };
-  } catch(e) {
-    console.warn('SerpAPI Google 异常, fallback Brave:', e.message);
-    return doBraveSearch(query, numResults, parentSignal);
-  }
+  return doBraveSearch(query, numResults, parentSignal);
 }
 
 function parseGithubResults(data, max) {
@@ -356,9 +344,10 @@ function detectWikiLang(query, lang) {
 async function doWikipediaSearch(query, numResults = 5, parentSignal, lang) {
   const site = detectWikiLang(query, lang);
   const engine = `Wikipedia (${site})`;
+  // origin=* 让 MediaWiki 返回 ACAO: *（已实测），因此走直连而不是第三方代理
   const searchUrl = `https://${site}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&srlimit=${Math.min(numResults, 20)}&srprop=snippet|wordcount&format=json&origin=*`;
   try {
-    const text = await fetchViaProxy(searchUrl, 15000, parentSignal);
+    const text = await fetchDirectText(searchUrl, 15000, parentSignal);
     const data = JSON.parse(text);
     const hits = data?.query?.search || [];
     if (!hits.length) return { error: null, results: [], engine };
@@ -388,7 +377,7 @@ async function fetchWikipediaExtracts(site, titles, parentSignal) {
   if (!titles.length) return map;
   const url = `https://${site}.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&exintro=1&exlimit=max&redirects=1&titles=${encodeURIComponent(titles.join('|'))}&format=json&origin=*`;
   try {
-    const text = await fetchViaProxy(url, 15000, parentSignal);
+    const text = await fetchDirectText(url, 15000, parentSignal);
     const pages = JSON.parse(text)?.query?.pages || {};
     for (const key of Object.keys(pages)) {
       const p = pages[key];
@@ -401,7 +390,7 @@ async function fetchWikipediaExtracts(site, titles, parentSignal) {
 // Wikipedia 条目全文（explaintext 纯文本，比抓 HTML 干净得多）
 async function fetchWikipediaFullText(title, site, originalUrl, parentSignal) {
   const url = `https://${site}.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&titles=${encodeURIComponent(title)}&format=json&origin=*`;
-  const text = await fetchViaProxy(url, 20000, parentSignal);
+  const text = await fetchDirectText(url, 20000, parentSignal);
   const pages = JSON.parse(text)?.query?.pages || {};
   const page = Object.values(pages)[0];
   if (!page || page.missing !== undefined || !page.extract) {
@@ -425,7 +414,7 @@ async function doHackerNewsSearch(query, numResults = 10, parentSignal) {
   const engine = 'Hacker News';
   const apiUrl = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&hitsPerPage=${Math.min(numResults, 30)}`;
   try {
-    const text = await fetchViaProxy(apiUrl, 15000, parentSignal);
+    const text = await fetchDirectText(apiUrl, 15000, parentSignal);
     const data = JSON.parse(text);
     const results = [];
     for (const hit of (data.hits || [])) {
@@ -480,13 +469,14 @@ async function doPubMedSearch(query, numResults = 10, parentSignal) {
   }
 }
 
-// NCBI 免 key 限 3 请求/秒（HTTP 429），并发调用时需退避重试；全部失败返回 null
+/* NCBI 免 key 限 3 请求/秒（HTTP 429），并发调用时需退避重试；全部失败返回 null。
+   NCBI 原生返回 ACAO: *（已实测），故走 fetchDirectText 直连。 */
 async function fetchJsonWithRetry(url, parentSignal, attempts = 4) {
   for (let i = 0; i < attempts; i++) {
     // 指数退避 + 随机抖动，避免同一轮的多个并发调用步调一致地反复撞限流
     if (i) await new Promise(r => setTimeout(r, 400 * Math.pow(2, i - 1) + Math.random() * 400));
     if (parentSignal?.aborted) return null;
-    try { return JSON.parse(await fetchViaProxy(url, 15000, parentSignal)); }
+    try { return JSON.parse(await fetchDirectText(url, 15000, parentSignal)); }
     catch(e) { if (i === attempts - 1) return null; }
   }
   return null;
@@ -520,13 +510,14 @@ function parsePubMedResults(data, max) {
 }
 
 // ── Stack Exchange（免 key，默认 stackoverflow 站点）──
-// 该 API 响应是 gzip，浏览器直连会自动解压；个别 CORS 代理会把二进制透传回来，
-// 所以解析失败时不要直接抛错，给出可读提示。
+/* 该 API 响应是 gzip，浏览器直连会自动解压；个别 CORS 代理会把二进制透传回来。
+   现已改直连（实测 ACAO: *），正常路径不再有这个问题，但 file:// 或直连失败时
+   仍会回退代理，所以保留解析失败的可读提示。 */
 async function doStackExchangeSearch(query, numResults = 10, parentSignal, site = 'stackoverflow') {
   const engine = site === 'stackoverflow' ? 'Stack Overflow' : `Stack Exchange (${site})`;
   const apiUrl = `https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(query)}&site=${encodeURIComponent(site)}&pagesize=${Math.min(numResults, 30)}&filter=default`;
   try {
-    const text = await fetchViaProxy(apiUrl, 15000, parentSignal);
+    const text = await fetchDirectText(apiUrl, 15000, parentSignal);
     const data = parseLooseJson(text);
     if (!data) {
       return { error: `Stack Exchange 响应无法解析（可能是 gzip 未解压的代理响应），请改用其他搜索工具`, results: [], engine };

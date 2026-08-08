@@ -40,7 +40,7 @@ const PRECACHE_FILES = [
 const API_PATTERNS = [
   /\/chat\/completions/i, /\/v1\/models/i, /\/embeddings/i, /\/dashboard\//i,
   /\/billing\//i, /\/balance/i, /\/user\/dashboard/i,
-  /serpapi\.com/i, /api\.search\.brave\.com/i, /allorigins/i, /corsproxy/i,
+  /api\.search\.brave\.com/i, /allorigins/i, /corsproxy/i,
 ];
 
 self.addEventListener('install', event => {

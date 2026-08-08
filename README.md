@@ -6,7 +6,7 @@ A pure browser-based AI Agent client — no installation, no backend, no Docker,
 
 - **Zero Setup** — Pure frontend, runs entirely in the browser. No server, no Docker, no Python, no Node.js. Just open `index.html` in any modern browser.
 - **Multi-Model Support** — Switch between models (Claude, GPT, etc.) on the fly. Fetch available models from your API provider or add custom ones.
-- **Agent Web Search** — Built-in agent with internet access: Google (SerpAPI), Brave Search, arXiv, Semantic Scholar, GitHub search, and webpage scraping. Up to 20 rounds of autonomous search per query.
+- **Agent Web Search** — Built-in agent with internet access: Brave Search, arXiv, Semantic Scholar, OpenAlex, CrossRef, PubMed, Wikipedia, Hacker News, Stack Overflow, GitHub search, and webpage scraping. Up to 20 rounds of autonomous search per query. Only Brave requires a key; it is sent as a request header directly to Brave, never through a third-party proxy.
 - **Conversation Tree** — Branch, edit, and rewind conversations. Navigate between branches with ease.
 - **Knowledge Buffer** — Right-side panel for caching search results, uploaded files, and fetched web pages. The agent reads from it on demand.
 - **Long-term Memory** — A small set of durable facts about you, shared across conversations. The agent decides what is worth keeping (stable preferences and habits only, never task details), with a hard character cap; going over triggers one LLM call that merges and shortens entries. Inspect, edit or delete entries individually via 🧠 in the top bar, or turn the whole thing off.

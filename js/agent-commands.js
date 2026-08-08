@@ -292,8 +292,8 @@ function appendSearchResultsCard(aiMsgId, results, query, type, engine, fallback
   let engineTag = '';
   if (engine) {
     const engineColors = {
-      'Google': '#4285f4', 'Google (SerpAPI)': '#4285f4', 'Brave': '#fb542b', 'arXiv API': '#b31b1b',
-      'Semantic Scholar': '#1857b6', 'Google Scholar (SerpAPI)': '#1857b6', 'GitHub API': '#8b5cf6',
+      'Google': '#4285f4', 'Brave': '#fb542b', 'arXiv API': '#b31b1b',
+      'Semantic Scholar': '#1857b6', 'GitHub API': '#8b5cf6',
       'OpenAlex': '#e6553a', 'CrossRef': '#2a6496', 'Scholar (all failed)': '#888',
       'Wikipedia (en)': '#636466', 'Wikipedia (zh)': '#636466', 'Hacker News': '#ff6600',
       'PubMed': '#326295', 'Stack Overflow': '#f48024',

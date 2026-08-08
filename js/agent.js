@@ -78,8 +78,8 @@ function getToolDefinitions() {
   }
   const q = { query: { type: 'string', description: 'Search keywords' } };
   tools.push(...[
-    fn('search_web', 'General web search (Google via SerpAPI, Brave fallback). Use for general information.', q, ['query']),
-    fn('search_google', 'High-quality Google search (SerpAPI). Prefer this for general info.', q, ['query']),
+    fn('search_web', 'General web search (Brave Search). Use for general information.', q, ['query']),
+    fn('search_google', 'General web search (Brave Search). Same backend as search_web.', q, ['query']),
     fn('search_arxiv', 'Search arXiv papers (returns title, authors, abstract).', q, ['query']),
     fn('search_scholar', 'Academic paper search (Semantic Scholar / OpenAlex / CrossRef).', q, ['query']),
     fn('search_github', 'Search GitHub repositories, sorted by stars.', q, ['query']),

@@ -196,7 +196,6 @@ function saveConfig() {
       codeEnabled: $('cfgCodeEnabled') ? $('cfgCodeEnabled').checked : false,
       searchMode: STATE.searchMode,
       toolChoice: STATE.toolChoice,
-      serpApiKey: $('cfgSerpApiKey').value,
       braveKey: $('cfgBraveKey').value,
       theme: STATE.theme,
       lang: STATE.lang,
@@ -245,8 +244,8 @@ function cfgSyncGroupBadges() {
   if ($('cfgCodeEnabled') && $('cfgCodeEnabled').checked) caps.push('⚙');
   set('grpAgentBadge', caps.length ? caps.join(' ') : (isZh ? '关' : 'off'), caps.length > 0);
 
-  const keys = (has('cfgSerpApiKey') ? 1 : 0) + (has('cfgBraveKey') ? 1 : 0);
-  set('grpSearchBadge', keys ? keys + (isZh ? ' 个 Key' : ' key' + (keys > 1 ? 's' : '')) : (isZh ? '无 Key' : 'no key'), keys > 0);
+  const hasBrave = has('cfgBraveKey');
+  set('grpSearchBadge', hasBrave ? (isZh ? '已配置' : 'set') : (isZh ? '无 Key' : 'no key'), hasBrave);
 }
 
 function loadConfig() {
@@ -287,7 +286,6 @@ function loadConfig() {
       STATE.toolChoice = c.toolChoice;
     }
     if ($('cfgToolChoice')) $('cfgToolChoice').value = STATE.toolChoice || 'auto';
-    $('cfgSerpApiKey').value = c.serpApiKey || env.SERP_API_KEY || '';
     $('cfgBraveKey').value = c.braveKey || env.BRAVE_SEARCH_KEY || '';
     if (c.theme) STATE.theme = c.theme;
     if (c.lang) STATE.lang = c.lang;
@@ -298,8 +296,7 @@ function loadConfig() {
   if (needResave) { saveConfig(); }
 }
 
-/* 恢复折叠状态。没有存档时用默认值；无论存档怎么写，只要 Base URL / API Key
-   还是空的就强制展开「API 连接」——否则首次使用的人看不到该填哪里。 */
+
 function cfgApplyGroups(saved) {
   const s = (saved && typeof saved === 'object') ? saved : {};
   for (const id of CFG_GROUP_IDS) {
@@ -365,7 +362,7 @@ const I18N = {
     systemPrompt: 'System Prompt', temperature: 'Temperature', maxTokens: 'Max Tokens',
     maxTokHint: '仅限单次<b>输出</b>长度，非上下文窗口。',
     maxTokDetail: '这是发给 API 的 max_tokens，只约束模型一次回复能写多长，与上下文窗口无关。多数模型上限在 4k–32k，填过大服务端会直接返回 400。',
-    serpApiKey: 'SerpAPI Key', braveKey: 'Brave Search Key',
+    braveKey: 'Brave Search Key',
     enableSearch: '启用 Agent 联网能力（搜索+抓取网页）',
     enableCode: '启用 Agent 代码执行（Python / JS 本地沙箱）',
     codeHint: '代码在<b>你的浏览器沙箱</b>内运行，首次约 10MB。',
@@ -404,7 +401,7 @@ const I18N = {
     systemPrompt: 'System Prompt', temperature: 'Temperature', maxTokens: 'Max Tokens',
     maxTokHint: 'Caps one <b>reply</b>, not the context window.',
     maxTokDetail: 'This is the API max_tokens: it only limits how long a single reply can be, and has nothing to do with the context window. Most models cap at 4k–32k; a value that is too large makes the server return 400.',
-    serpApiKey: 'SerpAPI Key', braveKey: 'Brave Search Key',
+    braveKey: 'Brave Search Key',
     enableSearch: 'Enable Agent web access (search + scrape)',
     enableCode: 'Enable Agent code execution (Python / JS local sandbox)',
     codeHint: 'Code runs in <b>your browser sandbox</b>; ~10MB on first use.',
@@ -453,7 +450,7 @@ function applyI18n() {
   const labels = {
     cfgBaseUrl: 'baseUrl', cfgApiKey: 'apiKey', cfgSystem: 'systemPrompt',
     cfgTemp: 'temperature', cfgMaxTok: 'maxTokens',
-    cfgSerpApiKey: 'serpApiKey', cfgBraveKey: 'braveKey',
+    cfgBraveKey: 'braveKey',
   };
   for (const [id, key] of Object.entries(labels)) {
     const el = $(id);

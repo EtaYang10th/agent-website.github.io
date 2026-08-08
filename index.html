@@ -136,13 +136,12 @@
         <span class="cfg-group-badge" id="grpSearchBadge"></span>
       </summary>
       <div class="cfg-group-body">
-        <div class="config-row">
-          <label>SerpAPI Key</label>
-          <input id="cfgSerpApiKey" type="password" value="" placeholder="your_serpapi_key">
-        </div>
         <div class="config-row" style="margin-bottom:0">
           <label>Brave Search Key</label>
           <input id="cfgBraveKey" type="password" value="" placeholder="your_brave_key">
+        </div>
+        <div class="config-hint-line">
+          <span class="config-hint">密钥走请求头<b>直连</b> Brave，不经任何第三方代理。</span>
         </div>
       </div>
     </details>
@@ -340,7 +339,7 @@
       + '<label style="font-size:.8rem;color:#888">API Key</label>'
       + '<input id="_setupKey" type="password" style="width:100%;padding:8px 12px;margin:4px 0 20px;border-radius:8px;border:1px solid #444;background:#2a2a3e;color:#fff;font-size:.9rem" placeholder="sk-...">'
       + '<button id="_setupBtn" style="width:100%;padding:10px;border:none;border-radius:8px;background:#6c63ff;color:#fff;font-size:1rem;cursor:pointer;font-weight:600">开始使用 ✦</button>'
-      + '<p style="color:#666;font-size:.75rem;margin-top:12px;text-align:center">搜索功能（SerpAPI / Brave）可稍后在左侧面板配置</p>'
+      + '<p style="color:#666;font-size:.75rem;margin-top:12px;text-align:center">搜索功能（Brave Search）可稍后在左侧面板配置</p>'
       + '</div></div>';
     document.body.appendChild(overlay);
     document.getElementById('_setupBtn').onclick = function() {

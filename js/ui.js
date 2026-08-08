@@ -114,67 +114,29 @@ function extractBalanceSummary(data) {
   return s;
 }
 
-/* ── 搜索 Key 用量统一查询 ──
-   取代了早期各查一个服务的 checkSerpApiUsage / checkBraveUsage（已删除）：
-   这里一次把两家的用量都拉出来，SerpAPI 有用量接口就画进度条，
-   Brave 没有用量 API，只能发一次探测搜索验证 Key 有效性并给出 Dashboard 链接。 */
+/* ── 搜索 Key 用量查询 ──
+   Brave 没有用量接口，只能发一次探测搜索验证 Key 有效性，再给出 Dashboard 链接。
+   探测走 doBraveSearch，即直连 + 请求头带 Key，不经任何第三方代理。 */
 async function checkSearchKeyUsage() {
-  const serpKey = $('cfgSerpApiKey').value.trim();
   const braveKey = $('cfgBraveKey').value.trim();
-  if (!serpKey && !braveKey) {
-    toast('请先配置 SerpAPI Key 或 Brave Search Key', 'fail');
+  if (!braveKey) {
+    toast('请先配置 Brave Search Key', 'fail');
     return;
   }
 
-  let html = '';
-
-  // SerpAPI
-  if (serpKey) {
-    html += '<div style="margin-bottom:16px">';
-    html += '<div style="font-weight:600;font-size:.95rem;margin-bottom:8px">🔍 SerpAPI</div>';
-    try {
-      toast('正在查询 SerpAPI 用量...', 'info');
-      const text = await fetchViaProxy(`https://serpapi.com/account.json?api_key=${encodeURIComponent(serpKey)}`, 15000);
-      const d = JSON.parse(text);
-      const used = d.this_month_usage || 0;
-      const total = d.searches_per_month || 0;
-      const left = d.plan_searches_left ?? d.total_searches_left ?? (total - used);
-      const pct = total > 0 ? Math.round((used / total) * 100) : 0;
-      const barColor = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#22c55e';
-      html += `<div style="font-size:.85rem;color:var(--text2);margin-bottom:6px">${escHtml(d.plan_name || 'Unknown Plan')} · ${escHtml(d.account_email || '')}</div>`;
-      html += `<div style="background:var(--input-bg);border-radius:8px;height:20px;overflow:hidden;margin-bottom:6px">`;
-      html += `<div style="height:100%;width:${pct}%;background:${barColor};border-radius:8px;transition:width .3s"></div></div>`;
-      html += `<div style="display:flex;justify-content:space-between;font-size:.82rem;color:var(--text3)">`;
-      html += `<span>已用 ${used} / ${total} 次 (${pct}%)</span><span>剩余 ${left} 次</span></div>`;
-      html += `<div style="font-size:.78rem;color:var(--text3);margin-top:4px">⏱ 本小时: ${d.this_hour_searches ?? '?'} 次 · 上小时: ${d.last_hour_searches ?? '?'} 次 · 限制: ${d.account_rate_limit_per_hour ?? '?'}/h</div>`;
-    } catch (e) {
-      html += `<div style="color:var(--warn);font-size:.85rem">❌ 查询失败: ${escHtml(e.message)}</div>`;
-      html += `<div style="font-size:.78rem;margin-top:4px"><a href="https://serpapi.com/account.json?api_key=${encodeURIComponent(serpKey)}" target="_blank" style="color:var(--accent)">在新标签页查看</a></div>`;
+  let html = '<div><div style="font-weight:600;font-size:.95rem;margin-bottom:8px">🦁 Brave Search</div>';
+  try {
+    toast('正在验证 Brave Key...', 'info');
+    const result = await doBraveSearch('test', 1);
+    if (result.error) {
+      html += `<div style="color:var(--warn);font-size:.85rem">❌ Key 无效或已过期: ${escHtml(result.error)}</div>`;
+    } else {
+      html += `<div style="font-size:.85rem;color:#22c55e">✅ Key 有效，搜索功能正常</div>`;
     }
-    html += '</div>';
+  } catch (e) {
+    html += `<div style="color:var(--warn);font-size:.85rem">❌ 验证失败: ${escHtml(e.message)}</div>`;
   }
-
-  // Brave
-  if (braveKey) {
-    html += '<div>';
-    html += '<div style="font-weight:600;font-size:.95rem;margin-bottom:8px">🦁 Brave Search</div>';
-    try {
-      toast('正在验证 Brave Key...', 'info');
-      const result = await doBraveSearch('test', 1);
-      if (result.error) {
-        html += `<div style="color:var(--warn);font-size:.85rem">❌ Key 无效或已过期: ${escHtml(result.error)}</div>`;
-      } else {
-        html += `<div style="font-size:.85rem;color:#22c55e">✅ Key 有效，搜索功能正常</div>`;
-      }
-    } catch (e) {
-      html += `<div style="color:var(--warn);font-size:.85rem">❌ 验证失败: ${escHtml(e.message)}</div>`;
-    }
-    html += `<div style="font-size:.78rem;color:var(--text3);margin-top:6px">Brave 不提供用量 API，详细用量请访问 <a href="https://api-dashboard.search.brave.com/app/subscriptions/usage-limits" target="_blank" style="color:var(--accent)">Brave Dashboard</a></div>`;
-    html += '</div>';
-  }
-
-  if (!serpKey) html += '<div style="font-size:.82rem;color:var(--text3)">💡 SerpAPI Key 未配置</div>';
-  if (!braveKey) html += '<div style="font-size:.82rem;color:var(--text3);margin-top:8px">💡 Brave Search Key 未配置</div>';
+  html += `<div style="font-size:.78rem;color:var(--text3);margin-top:6px">Brave 不提供用量 API，详细用量请访问 <a href="https://api-dashboard.search.brave.com/app/subscriptions/usage-limits" target="_blank" rel="noopener noreferrer" style="color:var(--accent)">Brave Dashboard</a></div></div>`;
 
   showModal('🔍 搜索 Key 用量', html);
 }
